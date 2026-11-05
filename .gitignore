@@ -1,0 +1,20 @@
+# Secrets & keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.near-credentials/
+neardev/
+
+# Build output
+target/
+node_modules/
+dist/
+build/
+out/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

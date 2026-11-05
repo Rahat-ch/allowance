@@ -201,3 +201,12 @@ The sandbox has **no MPC signer**. Tests need a mock signer contract that implem
   - Live `storage_balance_bounds`: min = max = `1250000000000000000000` yocto (0.00125 NEAR). The Payer Account and every Payee need `storage_deposit`.
   - Mainnet: `17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1` (`defaultAssets.ts#L13-L18`).
 - **Faucet:** https://faucet.circle.com lists **"Near Testnet"**. No account or login is needed, but it is **reCAPTCHA-protected**, so it needs a browser and a human. It gives 20 USDC per request, one request per asset/network pair every 2 hours per address. Read from the live page 2026-11-05. Whether it pays to a named `.testnet` account or only to an implicit account is **UNVERIFIED**.
+
+## Verified on testnet (2026-11-05, ticket #2)
+
+- Payer Account `pay.allowance.allowance-owner-yinu9f.testnet` was created by the contract with exactly 4 FullAccess keys from `derived_public_key` (paths `x402/0..3`, domain 1); `v1.signer-prod.testnet` independently returns the same `x402/0` key.
+- A contract-built, MPC-signed Signed Payment (0.01 USDC) was verified and settled by the unmodified `@x402/near` 2.30.0 facilitator: settlement tx [3t3hvhwW…](https://testnet.nearblocks.io/txns/3t3hvhwWpTwotjo31UD4maeKDYzqnBKAS8zgux29ygQC), final `SuccessValue`, NEP-141 `ft_transfer` payer → payee.
+- Signing latency: ~5–7 s from `tracer_sign` to `Signed`. End to end (sign, verify, settle): ~17 s.
+- Nonce rule `max((block_height − 1) × 1e6, last + 1)` and `max_block_height = block_height + 60` passed the facilitator's final-height checks.
+- **RPC speed matters.** With `rpc.testnet.near.org` (~3 s/call) the facilitator's checks outlasted a 60-block window and settlement failed with `DelegateActionExpired` ([XHBjcVSx…](https://testnet.nearblocks.io/txns/XHBjcVSxemzND53dn1nubaVp7dK8rYscPzxo2HZuo6g)). FastNEAR (~0.7 s/call) settles comfortably. That expired payment's 0.01 USDC stays in the Payer Account, counted as spent, as ADR 0003 intends.
+- `x402Client` applies a default $1 per-payment spend control on default assets; the tracer disables it because the contract enforces the Policy.

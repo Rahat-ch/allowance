@@ -12,8 +12,8 @@ import { NEAR_TESTNET_CAIP2, getDefaultAsset } from "@x402/near";
 
 export const NETWORK = NEAR_TESTNET_CAIP2;
 
-/** Primary testnet RPC first, then the fallback. */
-export const RPC_URLS = ["https://rpc.testnet.near.org", "https://test.rpc.fastnear.com"] as const;
+/** FastNEAR first: rpc.testnet.near.org is deprecated and ~4x slower, which can outlast a 60-block Signed Payment. */
+export const RPC_URLS = ["https://test.rpc.fastnear.com", "https://rpc.testnet.near.org"] as const;
 
 /** Circle USDC on NEAR testnet, as the x402 NEAR package lists it. */
 export const USDC_TESTNET = getDefaultAsset(NETWORK).asset;

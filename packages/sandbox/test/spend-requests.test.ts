@@ -105,17 +105,14 @@ test("an identical retry returns the same Signed Payment; changed details are an
 });
 
 test("the Agent's key can only submit Spend Requests", async () => {
-  const attempts: [string, Record<string, unknown>][] = [
-    ["add_payee", { payee: "attacker.sandbox" }],
-    ["on_payer_funded", { request_id: "req_0000000000000001" }],
-    ["create_payer_account", { key_count: 1 }],
-  ];
-  for (const [method, args] of attempts) {
+  // Methods anyone with a full-access key on this account could call: the key's method
+  // restriction is the only thing stopping these.
+  for (const method of ["get_policy", "get_allowlist", "payer_keys"]) {
     await expect(
-      h.agent.callFunction({ contractId: h.allowance.accountId, methodName: method, args, gas: 30n * TGAS }),
-    ).rejects.toThrow();
+      h.agent.callFunction({ contractId: h.allowance.accountId, methodName: method, args: {}, gas: 30n * TGAS }),
+    ).rejects.toThrow(/does not allow method/);
   }
-  // And it can't move USDC directly either.
+  // And it can't call any other contract, so it can't move USDC directly.
   await expect(
     h.agent.callFunction({
       contractId: h.usdc.accountId,
@@ -126,4 +123,3 @@ test("the Agent's key can only submit Spend Requests", async () => {
     }),
   ).rejects.toThrow();
 });
-

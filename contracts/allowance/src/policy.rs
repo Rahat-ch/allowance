@@ -23,7 +23,11 @@ pub struct Policy {
 
 impl Policy {
     pub fn assert_valid(&self) {
+        require!(self.daily_cap.0 > 0, "daily_cap must be positive");
+        require!(self.hard_ceiling.0 > 0, "hard_ceiling must be positive");
+        require!(self.velocity_limit > 0, "velocity_limit must be positive");
         require!(self.auto_limit.0 <= self.hard_ceiling.0, "auto_limit must not exceed hard_ceiling");
+        require!(self.auto_limit.0 <= self.daily_cap.0, "auto_limit must not exceed daily_cap");
         require!(
             (1..=MAX_TIMEOUT_BLOCKS_LIMIT).contains(&self.max_timeout_blocks),
             "max_timeout_blocks must be 1..=600"

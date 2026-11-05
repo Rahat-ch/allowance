@@ -31,6 +31,8 @@ const PAYER_ACCOUNT_BALANCE: NearToken = NearToken::from_millinear(100);
 const FT_STORAGE_DEPOSIT: NearToken = NearToken::from_micronear(1_250);
 /// Chain Signatures `sign` needs at least 15 TGas plus room for the yield (docs/notes).
 const SIGN_GAS: Gas = Gas::from_tgas(50);
+/// `on_signed` verifies the signature, encodes the payload and stores it.
+const ON_SIGNED_GAS: Gas = Gas::from_tgas(30);
 /// Largest signer response `on_signed` reads; a real one is ~300 bytes.
 const SIGN_RESPONSE_MAX_BYTES: usize = 2_048;
 /// Gas allowance on the Agent's function-call key.
@@ -212,6 +214,9 @@ impl Allowance {
     /// Re-submitting a Request ID with the same Payee, amount and memo returns the
     /// request as it is now, never a second payment. Different details are refused
     /// (Blocked, IdempotencyConflict) without storing anything.
+    ///
+    /// A malformed Request ID panics instead of being Blocked: there is no valid key to
+    /// record it under, and nothing is stored or spent.
     pub fn request_spend(
         &mut self,
         request_id: String,
@@ -230,16 +235,18 @@ impl Allowance {
             if existing.same_details(&payee, amount, &memo) {
                 return existing.clone();
             }
-            let conflict = SpendRequest {
+            // Its own event, so an indexer never mistakes the stored request for Blocked.
+            events::emit(
+                "idempotency_conflict",
+                json!({ "request_id": request_id, "payee": payee, "amount": amount }),
+            );
+            return SpendRequest {
                 outcome: Outcome::Blocked,
                 status: Status::Blocked,
                 blocked_reason: Some(BlockedReason::IdempotencyConflict),
-                limit: None,
-                payment: None,
-                ..self.new_request(request_id, payee, amount, memo, max_timeout_blocks)
+                memo: None,
+                ..self.new_request(request_id, payee, amount, None, max_timeout_blocks)
             };
-            emit_outcome(&conflict);
-            return conflict;
         }
 
         let mut request = self.new_request(request_id, payee, amount, memo, max_timeout_blocks);
@@ -248,6 +255,11 @@ impl Allowance {
                 request.outcome = Outcome::Blocked;
                 request.status = Status::Blocked;
                 request.blocked_reason = Some(reason);
+                // Never store an over-long memo: it would let the Agent drain this account's
+                // NEAR through storage.
+                if request.memo.as_ref().is_some_and(|m| m.len() > MAX_MEMO_BYTES) {
+                    request.memo = None;
+                }
             }
             Ok(Outcome::Pending) => {
                 request.outcome = Outcome::Pending;
@@ -373,7 +385,7 @@ impl Allowance {
                 })
                 .then(
                     Self::ext(env::current_account_id())
-                        .with_static_gas(Gas::from_tgas(15))
+                        .with_static_gas(ON_SIGNED_GAS)
                         .on_signed(request_id),
                 ),
         )

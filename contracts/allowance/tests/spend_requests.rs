@@ -97,6 +97,21 @@ fn scheduled_calls() -> Vec<(String, String)> {
         .collect()
 }
 
+/// JSON args of the scheduled call to `receiver`.`method`.
+fn call_args(receiver: &str, method: &str) -> Value {
+    get_created_receipts()
+        .into_iter()
+        .filter(|r| r.receiver_id.as_str() == receiver)
+        .flat_map(|r| r.actions)
+        .find_map(|a| match a {
+            MockAction::FunctionCallWeight { method_name, args, .. } if method_name == method.as_bytes() => {
+                Some(near_sdk::serde_json::from_slice(&args).unwrap())
+            }
+            _ => None,
+        })
+        .expect("call scheduled")
+}
+
 const ID: &str = "req_0000000000000001";
 
 // ---- setup -------------------------------------------------------------------------
@@ -164,6 +179,11 @@ fn a_spend_within_the_auto_limit_is_approved_and_starts_paying() {
     assert_eq!(
         scheduled_calls(),
         vec![(USDC_ID.into(), "ft_transfer".into()), (ALLOWANCE.into(), "on_payer_funded".into())]
+    );
+    assert_eq!(
+        call_args(USDC_ID, "ft_transfer"),
+        json!({"receiver_id": "pay.allowance.owner.testnet", "amount": (USD / 2).to_string(), "memo": null}),
+        "exactly the amount goes to the Payer Account"
     );
     assert_eq!(events("spend_request")[0]["outcome"], "Approved");
 }
@@ -239,6 +259,15 @@ fn malformed_requests_are_blocked_as_invalid() {
 }
 
 #[test]
+fn an_over_long_memo_is_never_stored() {
+    let mut c = allowance();
+    ctx(ALLOWANCE, 1_000);
+    let r = c.request_spend(ID.into(), acc(PAYEE), U128(USD), Some("x".repeat(100_000)), 60);
+    assert_eq!(r.blocked_reason, Some(BlockedReason::InvalidRequest));
+    assert_eq!(c.get_request(ID.into()).unwrap().memo, None);
+}
+
+#[test]
 fn a_64_byte_memo_is_fine() {
     let mut c = allowance();
     ctx(ALLOWANCE, 1_000);
@@ -298,7 +327,8 @@ fn a_retry_with_different_details_is_an_idempotency_conflict_and_changes_nothing
         let r = c.request_spend(ID.into(), acc(payee), U128(amount), Some(memo.into()), 60);
         assert_eq!(r.blocked_reason, Some(BlockedReason::IdempotencyConflict));
         assert_eq!(scheduled_calls(), vec![]);
-        assert_eq!(events("spend_request")[0]["blocked_reason"], "IdempotencyConflict");
+        assert_eq!(events("idempotency_conflict")[0]["request_id"], ID);
+        assert!(events("spend_request").is_empty(), "the stored request's Outcome is not restated");
     }
     assert_eq!(c.get_request(ID.into()), Some(first), "the stored request is untouched");
 }
@@ -472,4 +502,41 @@ fn payer_keys_are_only_recorded_once_the_account_exists() {
     ctx(ALLOWANCE, 1_000);
     let _ = c.on_payer_created(vec![key.clone()], Ok(()));
     assert_eq!(c.payer_keys(), vec![key]);
+}
+
+// ---- retries never pay twice -------------------------------------------------------
+
+fn retry_schedules_nothing(c: &mut Allowance, expected: Status) {
+    let before = c.get_request(ID.into()).unwrap();
+    assert_eq!(before.status, expected);
+    let retry = spend(c, ID, PAYEE, USD);
+    assert_eq!(retry, before);
+    assert_eq!(scheduled_calls(), vec![], "a retry in {expected:?} must not move money or sign again");
+}
+
+#[test]
+fn a_retry_while_funding_or_signing_or_after_either_fails_never_pays_again() {
+    let mut c = allowance();
+    spend(&mut c, ID, PAYEE, USD);
+    retry_schedules_nothing(&mut c, Status::Funding);
+
+    funded(&mut c, 5_000);
+    retry_schedules_nothing(&mut c, Status::Signing);
+
+    respond(&mut c, Err(PromiseError::Failed));
+    retry_schedules_nothing(&mut c, Status::SignatureUnavailable);
+
+    let mut c = allowance();
+    spend(&mut c, ID, PAYEE, USD);
+    ctx(ALLOWANCE, 5_000);
+    let _ = c.on_payer_funded(ID.into(), Err(PromiseError::Failed));
+    retry_schedules_nothing(&mut c, Status::FundingFailed);
+}
+
+#[test]
+#[should_panic(expected = "auto_limit must not exceed daily_cap")]
+fn a_policy_whose_auto_limit_exceeds_its_daily_cap_is_refused() {
+    ctx(OWNER, 1_000);
+    let policy = Policy { daily_cap: U128(USD), ..demo_policy() };
+    Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, policy);
 }

@@ -1,0 +1,105 @@
+# Allowance
+
+Lets a human give an AI agent a budget it can spend under enforced rules, without giving the agent control of the funds.
+
+## Language
+
+### Parties
+
+**Owner**:
+The human who funds an Allowance, sets its Policy, and approves or rejects escalated spends. Holds full control and can pause or revoke the Agent at any time.
+_Avoid_: Principal, parent, guardian, user
+
+**Agent**:
+The AI program that spends from an Allowance. It can only ask to spend; it never holds the funds or the power to move them directly.
+_Avoid_: Bot, assistant, client
+
+### Control
+
+**Pause**:
+A reversible freeze set by the Owner. While paused, every new Spend Request is Blocked, but the Owner can still approve or reject Pending spends.
+_Avoid_: Freeze, kill switch
+
+**Revoke**:
+The permanent removal of an Agent from its Allowance. All its Pending spends are cancelled; spending again needs a new Agent.
+_Avoid_: Kill, disable
+
+**Withdraw**:
+The Owner taking funds back out of an Allowance. Only funds not held by a Reservation can be withdrawn.
+
+### Money
+
+**Allowance**:
+One Owner's budget for exactly one Agent, held in its own account and governed by one Policy. Denominated in a single stablecoin.
+_Avoid_: Vault, wallet, budget account
+
+**Daily Cap**:
+The most the Agent may spend in any rolling 24-hour period. It is never a calendar day; it does not reset at midnight.
+_Avoid_: Daily limit, daily budget
+
+**Auto Limit**:
+The largest single spend that goes through without the Owner's approval.
+_Avoid_: Per-tx limit, threshold
+
+**Hard Ceiling**:
+The largest single spend the Agent may request at all, even with approval. Anything above it is Blocked.
+_Avoid_: Max spend, hard cap
+
+**Payee**:
+An account the Agent wants to pay. The Agent can only pay Payees on the Allowlist.
+_Avoid_: Recipient, receiver, merchant
+
+**Allowlist**:
+The Payees the Owner has approved. Only the Owner can change it; the Agent cannot add to it by asking. Removing a Payee rejects every Pending spend to them.
+_Avoid_: Whitelist
+
+**Policy**:
+The full set of rules an Allowance enforces: Daily Cap, Auto Limit, Hard Ceiling, Allowlist, and the other limits.
+_Avoid_: Rules, config, settings
+
+### Spending
+
+**Spend Request**:
+The Agent's ask to pay a Payee a specific amount. Every Spend Request gets exactly one Outcome.
+_Avoid_: Payment, transaction, spend attempt
+
+**Outcome**:
+The verdict on a Spend Request: Approved, Pending, or Blocked.
+
+**Approved**:
+The Spend Request is within Policy and at most the Auto Limit, so it is paid immediately.
+
+**Pending**:
+The Spend Request is within Policy but above the Auto Limit, so it waits for the Owner to approve or reject it. It holds a Reservation while it waits, and Expires after 24 hours without a decision.
+_Avoid_: Escalated, held, queued
+
+**Rejected**:
+A Pending spend the Owner turned down. Its Reservation is released.
+
+**Expired**:
+A Pending spend nobody decided on within 24 hours. Treated like Rejected.
+
+**Reservation**:
+The amount set aside against the Daily Cap the moment a spend is Approved or Pending, before any money moves. Reservations are what stop many small requests from slipping past the cap together.
+_Avoid_: Hold, lock
+
+**Risk Check**:
+An independent review of a Spend Request that can only escalate it: a flagged spend that would be Approved becomes Pending. It can never approve or block anything.
+
+**Request ID**:
+The Agent's own identifier for a Spend Request. It is bound forever to its first amount and Payee: an identical retry gets back the original Outcome and never pays twice, and a retry with different details is Blocked.
+_Avoid_: Nonce, idempotency key
+
+**Paid**:
+An Approved spend whose payment reached the Payee. Only Paid spends count as proof of payment to a Payee.
+
+**Failed**:
+An Approved spend whose payment didn't go through. No money left the Allowance, so its Reservation and Velocity Limit slot are given back. Retrying needs a new Request ID.
+
+**Velocity Limit**:
+The most Spend Requests the Agent may have Approved or Pending in any rolling hour. Blocked requests don't count.
+_Avoid_: Rate limit
+
+**Blocked**:
+The Spend Request breaks the Policy and will never be paid, whatever the Agent or Owner does with it.
+_Avoid_: Rejected, which is reserved for an Owner turning down a Pending spend

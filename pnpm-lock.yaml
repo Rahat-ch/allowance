@@ -35,24 +35,49 @@ importers:
       '@x402/core':
         specifier: 2.30.0
         version: 2.30.0
-      '@x402/express':
-        specifier: 2.30.0
-        version: 2.30.0(express@5.3.0)(typescript@7.0.2)
       '@x402/fetch':
         specifier: 2.30.0
         version: 2.30.0
       '@x402/near':
         specifier: 2.30.0
         version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
-      express:
-        specifier: 5.3.0
-        version: 5.3.0
       near-api-js:
         specifier: 7.4.0
         version: 7.4.0
       near-sandbox:
         specifier: 0.3.5
         version: 0.3.5
+      seller:
+        specifier: workspace:*
+        version: link:../seller
+    devDependencies:
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 5.1.0
+        version: 5.1.0(@types/node@24.19.2)(vite@8.3.6(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15))
+
+  packages/seller:
+    dependencies:
+      '@x402/core':
+        specifier: 2.30.0
+        version: 2.30.0
+      '@x402/express':
+        specifier: 2.30.0
+        version: 2.30.0(express@5.3.0)(typescript@7.0.2)
+      '@x402/near':
+        specifier: 2.30.0
+        version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
+      express:
+        specifier: 5.3.0
+        version: 5.3.0
     devDependencies:
       '@types/express':
         specifier: ^5.0.6

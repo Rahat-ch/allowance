@@ -6,10 +6,11 @@
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { allowanceFetch, newRequestId, requestSpend, waitForPayment } from "../src/agent.js";
 import { TGAS, USDC, startHarness, type Harness } from "../src/harness.js";
-import { startSeller, type Seller } from "../src/seller.js";
+import { startSeller, type Seller } from "seller";
 
 let h: Harness;
 let seller: Seller;
+let hugeSeller: Seller;
 let attackerSeller: Seller;
 
 beforeAll(async () => {
@@ -28,19 +29,25 @@ beforeAll(async () => {
     facilitator: h.facilitator,
     payTo: h.payee.accountId,
     asset: h.usdc.accountId,
-    routes: { "GET /data": "$0.50", "GET /report": "$15", "GET /huge": "$51" },
+  });
+  hugeSeller = await startSeller({
+    facilitator: h.facilitator,
+    payTo: h.payee.accountId,
+    asset: h.usdc.accountId,
+    prices: { report: "$51" },
   });
   attackerSeller = await startSeller({
     facilitator: h.facilitator,
     payTo: attacker.accountId,
     asset: h.usdc.accountId,
-    routes: { "GET /steal": "$1" },
+    prices: { weather: "$1" },
   });
 });
 
 afterAll(async () => {
   await seller?.close();
   await attackerSeller?.close();
+  await hugeSeller?.close();
   await h?.stop();
 });
 
@@ -55,7 +62,7 @@ async function moneyAndSigner() {
 
 test("an Approved spend is paid with a Signed Payment the seller's facilitator settles", async () => {
   const before = await h.usdcBalance(h.payee.accountId);
-  const response = await allowanceFetch(h)(`${seller.url}/data`);
+  const response = await allowanceFetch(h)(`${seller.url}/weather`);
   expect(response.status).toBe(200);
   expect(await h.usdcBalance(h.payee.accountId)).toBe(before + USDC / 2n);
 });
@@ -65,7 +72,7 @@ test("paying an unknown Payee is Blocked and never reaches the signer", async ()
   try {
     const before = await moneyAndSigner();
     const ids: string[] = [];
-    const response = allowanceFetch(h, (id) => ids.push(id))(`${attackerSeller.url}/steal`);
+    const response = allowanceFetch(h, (id) => ids.push(id))(`${attackerSeller.url}/weather`);
     await expect(response).rejects.toThrow(/UnknownPayee/);
     expect(await moneyAndSigner()).toEqual(before);
     expect(await h.view(h.allowance.accountId, "get_request", { request_id: ids[0] })).toMatchObject({
@@ -79,7 +86,7 @@ test("paying an unknown Payee is Blocked and never reaches the signer", async ()
 
 test("a spend over the Hard Ceiling is Blocked and moves nothing", async () => {
   const before = await moneyAndSigner();
-  await expect(allowanceFetch(h)(`${seller.url}/huge`)).rejects.toThrow(/OverHardCeiling/);
+  await expect(allowanceFetch(h)(`${hugeSeller.url}/report`)).rejects.toThrow(/OverHardCeiling/);
   expect(await moneyAndSigner()).toEqual(before);
 });
 

@@ -87,7 +87,7 @@ fn split_spends_stop_exactly_at_the_daily_cap() {
     let fifth = spend_at(&mut c, time(0, 10), 5 * USD);
     assert_eq!(
         blocked(&fifth),
-        (Some(BlockedReason::DailyCapExceeded), detail(20 * USD, 20 * USD, Some(time(24, 0))))
+        (Some(BlockedReason::DailyCapExceeded), detail(20 * USD, 20 * USD, Some(time(25, 0))))
     );
     // Even one base unit more is refused.
     assert_eq!(spend_at(&mut c, time(0, 11), 1).blocked_reason, Some(BlockedReason::DailyCapExceeded));
@@ -123,21 +123,37 @@ fn a_spend_at_23_59_still_counts_at_00_01_so_nothing_doubles_up_across_midnight(
     }
     let after_midnight = spend_at(&mut c, time(24, 1), 5 * USD);
     assert_eq!(after_midnight.blocked_reason, Some(BlockedReason::DailyCapExceeded));
-    assert_eq!(after_midnight.limit.unwrap().retry_after_ns, Some(time(47, 0)));
+    assert_eq!(after_midnight.limit.unwrap().retry_after_ns, Some(time(48, 0)));
 }
 
 #[test]
-fn capacity_frees_24_to_25_hours_after_the_spends_bucket_hour() {
+fn capacity_frees_24_to_25_hours_after_the_spend() {
     let mut c = allowance(100);
     for _ in 0..4 {
-        spend_at(&mut c, time(0, 30), 5 * USD);
+        spend_at(&mut c, time(0, 59), 5 * USD);
     }
-    // Still held at the last instant of hour 23...
-    assert_eq!(spend_at(&mut c, time(24, 0) - 1, 5 * USD).blocked_reason, Some(BlockedReason::DailyCapExceeded));
-    // ...and free from the start of hour 24, 23.5 hours later for a spend made at :30.
-    assert_eq!(spend_at(&mut c, time(24, 0), 5 * USD).outcome, Outcome::Approved);
+    // A full 24 hours later it still counts, to the last instant of hour 24...
+    assert_eq!(spend_at(&mut c, time(24, 59), 5 * USD).blocked_reason, Some(BlockedReason::DailyCapExceeded));
+    assert_eq!(spend_at(&mut c, time(25, 0) - 1, 5 * USD).blocked_reason, Some(BlockedReason::DailyCapExceeded));
+    // ...and frees when hour 25 starts.
+    assert_eq!(spend_at(&mut c, time(25, 0), 5 * USD).outcome, Outcome::Approved);
 }
 
+#[test]
+fn no_rolling_24_hours_ever_holds_more_than_the_cap() {
+    // Spend the whole cap at 00:59:59; nothing more may be Approved until 24h have passed.
+    let mut c = allowance(1_000);
+    let start = time(0, 59) + 59_000_000_000;
+    assert_eq!(spend_at(&mut c, start, 5 * USD).outcome, Outcome::Approved);
+    for _ in 0..3 {
+        spend_at(&mut c, start, 5 * USD);
+    }
+    let mut t = start;
+    while t < start + 24 * HOUR_NS {
+        assert_eq!(spend_at(&mut c, t, 1).blocked_reason, Some(BlockedReason::DailyCapExceeded), "at +{}s", (t - start) / 1_000_000_000);
+        t += 10 * MINUTE;
+    }
+}
 #[test]
 fn retry_after_points_at_when_enough_capacity_frees() {
     let mut c = allowance(100);
@@ -147,10 +163,10 @@ fn retry_after_points_at_when_enough_capacity_frees() {
     spend_at(&mut c, time(5, 1), 4 * USD);
     // $19 used. $6 more fits once the hour-0 spend leaves the window: $14 + $6 = $20.
     let r = spend_at(&mut c, time(6, 0), 6 * USD);
-    assert_eq!(blocked(&r), (Some(BlockedReason::DailyCapExceeded), detail(19 * USD, 20 * USD, Some(time(24, 0)))));
+    assert_eq!(blocked(&r), (Some(BlockedReason::DailyCapExceeded), detail(19 * USD, 20 * USD, Some(time(25, 0)))));
     // $11 more also needs the hour-3 spend gone: $9 + $11 = $20.
     let big = spend_at(&mut c, time(6, 1), 11 * USD);
-    assert_eq!(big.limit.unwrap().retry_after_ns, Some(time(27, 0)));
+    assert_eq!(big.limit.unwrap().retry_after_ns, Some(time(28, 0)));
 }
 
 #[test]
@@ -171,6 +187,16 @@ fn failed_funding_releases_the_reservation() {
 }
 
 #[test]
+fn failed_funding_releases_only_that_spends_share_of_its_bucket() {
+    let mut c = allowance(100);
+    let a = spend_at(&mut c, time(0, 0), 5 * USD);
+    spend_at(&mut c, time(0, 1), 3 * USD);
+    at(ALLOWANCE, time(0, 2));
+    let _ = c.on_payer_funded(a.request_id, Err(PromiseError::Failed));
+    assert_eq!(c.get_budget().used_in_window, U128(3 * USD));
+}
+
+#[test]
 fn issuing_moves_the_reservation_to_the_issue_hour() {
     let mut c = allowance(100);
     let r = spend_at(&mut c, time(0, 0), 20 * USD);
@@ -178,9 +204,10 @@ fn issuing_moves_the_reservation_to_the_issue_hour() {
     at(ALLOWANCE, time(2, 0));
     let _ = c.on_payer_funded(r.request_id.clone(), Ok(()));
     assert_eq!(c.get_request(r.request_id).unwrap().reserved_hour, Some(H + 2));
+    assert_eq!(c.get_budget().used_in_window, U128(20 * USD), "moved, not counted twice");
     // So it is still held when the request hour's bucket would have left the window.
-    assert_eq!(spend_at(&mut c, time(24, 30), 1).blocked_reason, Some(BlockedReason::DailyCapExceeded));
-    assert_eq!(spend_at(&mut c, time(26, 0), 1).outcome, Outcome::Approved);
+    assert_eq!(spend_at(&mut c, time(25, 30), 1).blocked_reason, Some(BlockedReason::DailyCapExceeded));
+    assert_eq!(spend_at(&mut c, time(27, 0), 1).outcome, Outcome::Approved);
 }
 
 #[test]
@@ -191,7 +218,7 @@ fn the_budget_view_shows_usage_reservations_and_when_capacity_frees() {
     at(OWNER, time(1, 30));
     let b = c.get_budget();
     assert_eq!((b.used_in_window, b.daily_cap, b.available), (U128(17 * USD), U128(20 * USD), U128(3 * USD)));
-    assert_eq!(b.next_release_ns, Some(time(24, 0)));
+    assert_eq!(b.next_release_ns, Some(time(25, 0)));
     assert_eq!((b.velocity_used, b.velocity_limit), (2, 10));
 }
 

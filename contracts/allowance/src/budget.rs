@@ -2,8 +2,9 @@
 //!
 //! Time is cut into hourly buckets keyed by absolute hour (block timestamp / 1h).
 //! - **Daily Cap:** every Approved or Pending spend reserves its amount in a bucket the
-//!   moment it is requested. The window is the current bucket and the 23 before it, so a
-//!   spend leaves the window 24-25 hours after its bucket's hour starts. A Reservation is
+//!   moment it is requested. The window is the current bucket and the 24 before it, so a
+//!   spend counts for 24-25 hours: bucket `b` leaves the window when hour `b + 25` starts.
+//!   (With only 24 buckets a spend at 00:59 would leave at 24:00, 23 hours later.) A Reservation is
 //!   released when a spend ends without money leaving (Rejected, Expired, Lapsed, failed
 //!   funding) and moved to the issue hour's bucket when its Signed Payment is issued.
 //! - **Velocity Limit:** Approved and Pending spends are counted in their request hour's
@@ -14,8 +15,8 @@ use near_sdk::near;
 use near_sdk::store::LookupMap;
 
 pub const HOUR_NS: u64 = 3_600_000_000_000;
-/// Buckets in the Daily Cap window: this hour and the 23 before it.
-pub const DAY_BUCKETS: u64 = 24;
+/// Buckets in the Daily Cap window: this hour and the 24 before it.
+pub const DAY_BUCKETS: u64 = 25;
 /// Buckets in the Velocity window: this hour and the one before it.
 pub const VELOCITY_BUCKETS: u64 = 2;
 
@@ -85,14 +86,16 @@ impl Budget {
         if used.saturating_add(amount) <= cap {
             return Ok(());
         }
-        // Walk the window oldest first: bucket `h` leaves it at the start of hour h + 24.
+        // Walk the window oldest first: bucket `h` leaves it at the start of hour h + 25.
+        // A best estimate: a Pending or approved-unsigned Reservation moves forward to the
+        // hour its Signed Payment is issued, which can make the real time later.
         let retry_after_ns = if amount > cap {
             None
         } else {
             let mut still_used = used;
             Self::day_window(now_hour).find_map(|h| {
                 still_used -= self.reserved_in(h);
-                (still_used + amount <= cap).then(|| (h + DAY_BUCKETS) * HOUR_NS)
+                (still_used.checked_add(amount)? <= cap).then(|| (h + DAY_BUCKETS) * HOUR_NS)
             })
         };
         Err(Shortfall { used, limit: cap, retry_after_ns })
@@ -132,7 +135,8 @@ impl Budget {
     }
 
     /// Moves a Reservation to the hour its Signed Payment was issued in, so it counts for a
-    /// full window from issue.
+    /// full window from issue. Callers must only move Reservations still in the window
+    /// (Pending Expires and approvals are re-bucketed before their bucket can leave it).
     pub fn rebucket(&mut self, from_hour: u64, to_hour: u64, amount: u128) {
         if from_hour != to_hour {
             self.release(from_hour, amount);

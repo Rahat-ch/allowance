@@ -17,11 +17,11 @@ _Avoid_: Bot, assistant, client
 ### Control
 
 **Pause**:
-A reversible freeze set by the Owner. While paused, every new Spend Request is Blocked, but the Owner can still approve or reject Pending spends.
+A reversible freeze set by the Owner. While paused, every new Spend Request is Blocked and no Signed Payment is issued. The Owner can still approve or reject Pending spends, but approved ones can't be picked up until unpause.
 _Avoid_: Freeze, kill switch
 
 **Revoke**:
-The permanent removal of an Agent from its Allowance. All its Pending spends are cancelled; spending again needs a new Agent.
+The permanent removal of an Agent from its Allowance. All its Pending spends and approved spends not yet picked up are cancelled; Signed Payments already issued stay valid until they expire. Spending again needs a new Allowance.
 _Avoid_: Kill, disable
 
 **Withdraw**:
@@ -70,7 +70,7 @@ The verdict on a Spend Request: Approved, Pending, or Blocked.
 The Spend Request is within Policy and at most the Auto Limit, so a Signed Payment is issued immediately.
 
 **Pending**:
-The Spend Request is within Policy but above the Auto Limit, so it waits for the Owner to approve or reject it. It holds a Reservation while it waits, and Expires after 24 hours without a decision. Once approved, a Signed Payment is issued.
+The Spend Request is within Policy but above the Auto Limit, so it waits for the Owner to approve or reject it. It holds a Reservation while it waits, and Expires after 24 hours without a decision. Once approved, the Agent has 1 hour to pick up its Signed Payment.
 _Avoid_: Escalated, held, queued
 
 **Rejected**:
@@ -79,15 +79,22 @@ A Pending spend the Owner turned down. Its Reservation is released.
 **Expired**:
 A Pending spend nobody decided on within 24 hours. Treated like Rejected.
 
+**Lapsed**:
+An approved spend whose Signed Payment the Agent didn't pick up within 1 hour of approval. Its Reservation is released and it can no longer be paid.
+
+**Pickup**:
+The Agent collecting the Signed Payment for a spend the Owner approved, by re-submitting the same Request ID. Refused while Paused.
+_Avoid_: Claim, redeem
+
 **Reservation**:
-The amount set aside against the Daily Cap the moment a spend is Approved or Pending, before any money moves. A Rejected or Expired spend releases it; a Signed Payment keeps it for the rest of the window. Reservations are what stop many small requests from slipping past the cap together.
+The amount set aside against the Daily Cap the moment a spend is Approved or Pending, before any money moves. A Rejected, Expired or Lapsed spend releases it; a Signed Payment keeps it for a full window from the moment it is issued, even if the signature never arrives. Reservations are what stop many small requests from slipping past the cap together.
 _Avoid_: Hold, lock
 
 **Risk Check**:
 An independent review of a Spend Request that can only escalate it: a flagged spend that would be Approved becomes Pending. It can never approve or block anything.
 
 **Request ID**:
-The Agent's own identifier for a Spend Request. It is bound forever to its first amount and Payee: an identical retry gets back the original Outcome and the same Signed Payment, so it never pays twice, and a retry with different details is Blocked.
+The Agent's own identifier for a Spend Request. It is bound forever to its first amount and Payee: an identical retry gets back the request's current state and the same Signed Payment, so it never pays twice (this is also how Pickup works), and a retry with different details is refused as a conflict.
 _Avoid_: Nonce, idempotency key
 
 **Signed Payment**:

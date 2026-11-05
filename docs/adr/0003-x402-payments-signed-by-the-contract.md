@@ -13,6 +13,8 @@ So the Allowance contract controls a full-access key on a dedicated Payer Accoun
 ## Consequences
 
 - The contract must never sign a payload the Agent supplies, only delegates it built from an approved request.
+- Once a payment is sent to the signer it counts as spent whatever happens: signer nodes publish signatures in public transactions, so a "failed" or late signature may still be usable by anyone.
+- The Allowance account must hold no full-access key, since whoever controls it could request signatures for the Payer Account (ADR 0004).
 - The Allowance can't see whether a Signed Payment was collected, so a Signed Payment counts as spent for the rest of the window. Short expiry limits the waste.
 - Concurrent Signed Payments from one key would invalidate each other's nonces, so the Payer Account uses a pool of derived keys.
 - The token is Circle USDC (testnet), because standard facilitators only accept it.

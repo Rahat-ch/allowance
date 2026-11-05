@@ -54,7 +54,7 @@ fn agent_request_starts_funding_the_payer_account() {
 
 #[test]
 #[should_panic(expected = "request id already used")]
-fn a_request_id_can_only_be_used_once() {
+fn tracer_refuses_a_reused_request_id_until_idempotent_retries_land_in_ticket_4() {
     let mut c = contract();
     c.set_payer_keys_for_test(vec![[7u8; 32]]);
     testing_env!(ctx(ALLOWANCE).build());

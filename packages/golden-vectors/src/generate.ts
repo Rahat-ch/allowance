@@ -57,7 +57,7 @@ const CASES: CaseInput[] = [
     name: "testnet_usdc_one_dollar_30_tgas",
     senderId: "payer.allowance.testnet",
     tokenId: "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af",
-    payee: "merchant.testnet",
+    payee: "payee.testnet",
     amount: 1_000_000n,
     nonce: 1n,
     maxBlockHeight: 200_000_060n,
@@ -90,7 +90,7 @@ const CASES: CaseInput[] = [
     name: "u64_max_nonce_height_gas",
     senderId: "payer.testnet",
     tokenId: "usdc.testnet",
-    payee: "merchant.testnet",
+    payee: "payee.testnet",
     amount: 1_000_000_000_000_000_000_000_000n, // 10^24
     nonce: U64_MAX,
     maxBlockHeight: U64_MAX,

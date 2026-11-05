@@ -154,7 +154,7 @@ impl Allowance {
             ext_signer::ext(self.signer_id.clone())
                 .with_static_gas(Gas::from_tgas(5))
                 .derived_public_key(
-                    format!("x402/{i}"),
+                    derivation_path(i),
                     Some(env::current_account_id()),
                     Some(self.domain_id),
                 )
@@ -297,20 +297,11 @@ impl Allowance {
         // block's range plus a per-key sequence.
         let nonce = ((height - 1) * 1_000_000).max(self.last_nonce[k] + 1);
         self.last_nonce[k] = nonce;
-        let d = FtTransferDelegate {
-            sender_id: self.payer_account_id(),
-            token_id: self.asset_id.clone(),
-            payee: p.payee.clone(),
-            amount: p.amount.0,
-            nonce,
-            max_block_height: height + p.max_timeout_blocks,
-            gas: FT_TRANSFER_GAS,
-            public_key: self.payer_keys[k],
-        };
         p.status = PaymentStatus::Signing;
         p.public_key = Some(ed25519_string(&self.payer_keys[k]));
-        p.nonce = Some(d.nonce);
-        p.max_block_height = Some(d.max_block_height);
+        p.nonce = Some(nonce);
+        p.max_block_height = Some(height + p.max_timeout_blocks);
+        let d = self.delegate_for(&p);
         self.payments.insert(request_id.clone(), p);
 
         PromiseOrValue::Promise(
@@ -318,7 +309,7 @@ impl Allowance {
                 .with_attached_deposit(NearToken::from_yoctonear(1))
                 .with_static_gas(SIGN_GAS)
                 .sign(SignRequest {
-                    path: format!("x402/{k}"),
+                    path: derivation_path(k as u32),
                     payload_v2: SignPayload::Eddsa(hex::encode(d.signable_hash())),
                     domain_id: self.domain_id,
                 })
@@ -379,6 +370,11 @@ impl Allowance {
         self.last_nonce = vec![0; keys.len()];
         self.payer_keys = keys;
     }
+}
+
+/// Chain Signatures derivation path of Payer Account key `index`.
+fn derivation_path(index: u32) -> String {
+    format!("x402/{index}")
 }
 
 fn try_parse_ed25519(s: &str) -> Option<[u8; 32]> {

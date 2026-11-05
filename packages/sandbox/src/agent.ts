@@ -1,7 +1,8 @@
 /**
  * The Agent side of an x402 payment in the harness: the official x402 fetch
- * wrapper and NEAR `exact` client scheme, with a signer that asks the
- * Allowance for a Signed Payment instead of signing anything itself.
+ * wrapper and NEAR `exact` client scheme, with a signer that submits a Spend
+ * Request to the Allowance (with the Agent's function-call key) and hands the
+ * seller the Signed Payment the contract issued.
  */
 import { randomBytes } from "node:crypto";
 import { x402Client } from "@x402/core/client";
@@ -9,18 +10,51 @@ import { wrapFetchWithPayment } from "@x402/fetch";
 import { ExactNearScheme } from "@x402/near/exact/client";
 import { NETWORK, type Harness } from "./harness.js";
 
-export type PaymentStatus = "Funding" | "Signing" | "Signed" | "FundingFailed" | "SignatureUnavailable";
+export type Outcome = "Approved" | "Pending" | "Blocked";
+export type Status =
+  | "Blocked"
+  | "Pending"
+  | "Funding"
+  | "Signing"
+  | "Signed"
+  | "FundingFailed"
+  | "SignatureUnavailable";
+export type BlockedReason =
+  | "UnknownPayee"
+  | "OverHardCeiling"
+  | "DailyCapExceeded"
+  | "VelocityExceeded"
+  | "Paused"
+  | "Revoked"
+  | "IdempotencyConflict"
+  | "InvalidRequest";
 
-export type SignedPayment = {
-  status: PaymentStatus;
+export type SpendRequest = {
+  request_id: string;
   payee: string;
   amount: string;
-  key_index: number;
+  memo: string | null;
   max_timeout_blocks: number;
-  public_key: string | null;
-  nonce: number | null;
-  max_block_height: number | null;
-  signed_delegate_action: string | null;
+  requested_at_ns: number;
+  outcome: Outcome;
+  status: Status;
+  blocked_reason: BlockedReason | null;
+  limit: { used: string; limit: string; retry_after_ns: number } | null;
+  payment: {
+    key_index: number;
+    public_key: string;
+    nonce: number;
+    max_block_height: number;
+    signed_delegate_action: string | null;
+  } | null;
+};
+
+export type SpendArgs = {
+  request_id: string;
+  payee: string;
+  amount: bigint;
+  memo?: string;
+  max_timeout_blocks: number;
 };
 
 export function newRequestId(): string {
@@ -28,29 +62,40 @@ export function newRequestId(): string {
 }
 
 /**
- * Submits the tracer request. Resolves once the contract accepted it (rejects with the
- * panic message if not); signing finishes later.
+ * Submits a Spend Request as the Agent and returns it with its Outcome. Rejects with
+ * the contract's message if the call panics. An Approved request's Signed Payment
+ * arrives later: see `waitForPayment`.
  */
-export async function requestSignedPayment(
-  h: Harness,
-  args: { request_id: string; payee: string; amount: bigint; max_timeout_blocks: number },
-): Promise<void> {
-  await h.callNow(h.allowance, h.allowance.accountId, "tracer_sign", { ...args, amount: args.amount.toString() });
+export async function requestSpend(h: Harness, args: SpendArgs): Promise<SpendRequest> {
+  return h.callNow<SpendRequest>(h.agent, h.allowance.accountId, "request_spend", {
+    request_id: args.request_id,
+    payee: args.payee,
+    amount: args.amount.toString(),
+    memo: args.memo ?? null,
+    max_timeout_blocks: args.max_timeout_blocks,
+  });
 }
 
-export async function getSignedPayment(h: Harness, requestId: string): Promise<SignedPayment | null> {
-  return h.view<SignedPayment | null>(h.allowance.accountId, "get_signed_payment", { request_id: requestId });
+export async function getRequest(h: Harness, requestId: string): Promise<SpendRequest | null> {
+  return h.view<SpendRequest | null>(h.allowance.accountId, "get_request", { request_id: requestId });
 }
 
-/** Polls until the request leaves Funding/Signing. */
-export async function waitForSignedPayment(h: Harness, requestId: string, timeoutMs = 60_000): Promise<SignedPayment> {
+/** Polls until the request is no longer moving money (Funding) or being signed (Signing). */
+export async function waitForPayment(h: Harness, requestId: string, timeoutMs = 60_000): Promise<SpendRequest> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const p = await getSignedPayment(h, requestId);
+    const r = await getRequest(h, requestId);
     h.assertResponderHealthy();
-    if (p && p.status !== "Funding" && p.status !== "Signing") return p;
-    if (Date.now() > deadline) throw new Error(`request ${requestId} still ${p?.status ?? "missing"} after ${timeoutMs}ms`);
+    if (r && r.status !== "Funding" && r.status !== "Signing") return r;
+    if (Date.now() > deadline) throw new Error(`request ${requestId} still ${r?.status ?? "missing"} after ${timeoutMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+/** Thrown when the Allowance doesn't produce a Signed Payment for a seller's offer. */
+export class NotPaid extends Error {
+  constructor(readonly request: SpendRequest) {
+    super(`not paid: ${request.outcome} ${request.status}${request.blocked_reason ? ` (${request.blocked_reason})` : ""}`);
   }
 }
 
@@ -65,15 +110,18 @@ export function allowanceFetch(h: Harness, onRequest?: (requestId: string) => vo
         async createSignedDelegateAction({ paymentRequirements: requirements }) {
           const requestId = newRequestId();
           onRequest?.(requestId);
-          await requestSignedPayment(h, {
+          const submitted = await requestSpend(h, {
             request_id: requestId,
             payee: requirements.payTo,
             amount: BigInt(requirements.amount),
-            max_timeout_blocks: requirements.maxTimeoutSeconds,
+            memo: "harness x402 call",
+            // ~1 block per second; the contract refuses more than the Policy allows.
+            max_timeout_blocks: Math.min(requirements.maxTimeoutSeconds, h.policy.max_timeout_blocks),
           });
-          const p = await waitForSignedPayment(h, requestId);
-          if (p.status !== "Signed" || !p.signed_delegate_action) throw new Error(`no Signed Payment: ${p.status}`);
-          return p.signed_delegate_action;
+          if (submitted.outcome !== "Approved") throw new NotPaid(submitted);
+          const r = await waitForPayment(h, requestId);
+          if (r.status !== "Signed" || !r.payment?.signed_delegate_action) throw new NotPaid(r);
+          return r.payment.signed_delegate_action;
         },
       }),
     );

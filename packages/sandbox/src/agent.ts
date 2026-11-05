@@ -99,8 +99,15 @@ export class NotPaid extends Error {
   }
 }
 
-/** `fetch` that pays x402 sellers through the Allowance. */
-export function allowanceFetch(h: Harness, onRequest?: (requestId: string) => void): typeof fetch {
+/**
+ * `fetch` that pays x402 sellers through the Allowance. `baseFetch` is what
+ * actually sends the requests (tests wrap it to see the PAYMENT-SIGNATURE).
+ */
+export function allowanceFetch(
+  h: Harness,
+  onRequest?: (requestId: string) => void,
+  baseFetch: typeof fetch = fetch,
+): typeof fetch {
   const client = new x402Client()
     // The Allowance enforces the Policy; the client's default $1 cap must not second-guess it.
     .setSpendControls(false)
@@ -125,5 +132,5 @@ export function allowanceFetch(h: Harness, onRequest?: (requestId: string) => vo
         },
       }),
     );
-  return wrapFetchWithPayment(fetch, client) as typeof fetch;
+  return wrapFetchWithPayment(baseFetch, client) as typeof fetch;
 }

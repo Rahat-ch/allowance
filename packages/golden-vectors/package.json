@@ -1,0 +1,23 @@
+{
+  "name": "golden-vectors",
+  "private": true,
+  "type": "module",
+  "description": "Reference NEP-366 delegate encodings from the official NEAR JS encoder, used as Rust test fixtures.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "generate": "tsx src/generate.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@near-js/crypto": "2.5.1",
+    "@near-js/transactions": "2.5.1",
+    "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

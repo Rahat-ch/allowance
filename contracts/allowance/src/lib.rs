@@ -66,6 +66,8 @@ pub struct Allowance {
     last_nonce: Vec<u64>,
     payments: LookupMap<String, SignedPayment>,
     payment_count: u64,
+    /// True while `create_payer_account` is waiting on its callbacks.
+    payer_creating: bool,
 }
 
 // ---- external interfaces -------------------------------------------------------------
@@ -122,6 +124,7 @@ impl Allowance {
             last_nonce: Vec::new(),
             payments: LookupMap::new(b"p"),
             payment_count: 0,
+            payer_creating: false,
         }
     }
 
@@ -144,7 +147,9 @@ impl Allowance {
     pub fn create_payer_account(&mut self, key_count: u32) -> Promise {
         require!(env::predecessor_account_id() == self.owner_id, "only the Owner");
         require!(self.payer_keys.is_empty(), "payer account already created");
+        require!(!self.payer_creating, "payer account creation already in progress");
         require!((1..=32).contains(&key_count), "key_count must be 1..=32");
+        self.payer_creating = true;
         let fetch = |i: u32| {
             ext_signer::ext(self.signer_id.clone())
                 .with_static_gas(Gas::from_tgas(5))
@@ -165,31 +170,62 @@ impl Allowance {
         )
     }
 
+    /// Receives the derived keys and creates the Payer Account with only those keys.
+    /// Keys are recorded only once the account exists (see `on_payer_created`).
     #[private]
-    pub fn on_payer_keys(&mut self, key_count: u32) -> Promise {
+    pub fn on_payer_keys(&mut self, key_count: u32) -> PromiseOrValue<()> {
         let mut keys = Vec::with_capacity(key_count as usize);
         for i in 0..key_count as u64 {
-            let raw = match env::promise_result_checked(i, 200) {
-                Ok(bytes) => bytes,
-                Err(_) => env::panic_str("derived_public_key failed"),
-            };
-            let s: String = near_sdk::serde_json::from_slice(&raw).expect("bad derived key");
-            keys.push(parse_ed25519(&s));
+            let parsed = env::promise_result_checked(i, 200)
+                .ok()
+                .and_then(|raw| near_sdk::serde_json::from_slice::<String>(&raw).ok())
+                .and_then(|s| try_parse_ed25519(&s));
+            match parsed {
+                Some(k) => keys.push(k),
+                None => {
+                    self.payer_creating = false;
+                    env::log_str("derived_public_key failed; payer account not created");
+                    return PromiseOrValue::Value(());
+                }
+            }
         }
-        let payer = self.payer_account_id();
-        let mut create = Promise::new(payer.clone())
+        let mut create = Promise::new(self.payer_account_id())
             .create_account()
             .transfer(PAYER_ACCOUNT_BALANCE);
         for k in &keys {
             create = create.add_full_access_key(ed25519_public_key(k));
         }
+        PromiseOrValue::Promise(
+            create.then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(20))
+                    .on_payer_created(keys.iter().map(ed25519_string).collect()),
+            ),
+        )
+    }
+
+    /// Records the Payer Account's keys only if the account was really created, then
+    /// registers it with the USDC contract.
+    #[private]
+    pub fn on_payer_created(
+        &mut self,
+        keys: Vec<String>,
+        #[callback_result] created: Result<(), PromiseError>,
+    ) -> PromiseOrValue<()> {
+        self.payer_creating = false;
+        if created.is_err() {
+            env::log_str("payer account creation failed; keys not recorded");
+            return PromiseOrValue::Value(());
+        }
+        let keys: Vec<[u8; 32]> =
+            keys.iter().map(|k| try_parse_ed25519(k).expect("bad payer key")).collect();
         self.last_nonce = vec![0; keys.len()];
         self.payer_keys = keys;
-        create.then(
+        PromiseOrValue::Promise(
             ext_ft::ext(self.asset_id.clone())
                 .with_attached_deposit(FT_STORAGE_DEPOSIT)
                 .with_static_gas(Gas::from_tgas(10))
-                .storage_deposit(payer, true),
+                .storage_deposit(self.payer_account_id(), true),
         )
     }
 
@@ -205,6 +241,10 @@ impl Allowance {
         require!(
             env::predecessor_account_id() == env::current_account_id(),
             "only the Agent can request a Signed Payment"
+        );
+        require!(
+            valid_request_id(&request_id),
+            "request_id must be 16-128 characters of [A-Za-z0-9_-]"
         );
         require!(!self.payments.contains_key(&request_id), "request id already used");
         require!(!self.payer_keys.is_empty(), "payer account not created");
@@ -294,16 +334,22 @@ impl Allowance {
     pub fn on_signed(
         &mut self,
         request_id: String,
-        #[callback_result] signed: Result<SignResponse, PromiseError>,
+        #[callback_result] signed: Result<near_sdk::serde_json::Value, PromiseError>,
     ) {
+        // Parse leniently: an unexpected response must end the payment, never revert this
+        // callback and leave it Signing forever.
         let mut p = self.payments.get(&request_id).cloned().expect("unknown request");
+        let d = self.delegate_for(&p);
         let sig: Option<[u8; 64]> = signed
             .ok()
+            .and_then(|v| near_sdk::serde_json::from_value::<SignResponse>(v).ok())
             .filter(|r| r.scheme == "Ed25519")
-            .and_then(|r| r.signature.try_into().ok());
+            .and_then(|r| r.signature.try_into().ok())
+            .filter(|sig| {
+                env::ed25519_verify(sig, &d.signable_hash(), &self.payer_keys[p.key_index as usize])
+            });
         match sig {
             Some(sig) => {
-                let d = self.delegate_for(&p);
                 p.signed_delegate_action = Some(d.signed_delegate_action_base64(&sig));
                 p.status = PaymentStatus::Signed;
             }
@@ -335,11 +381,18 @@ impl Allowance {
     }
 }
 
-fn parse_ed25519(s: &str) -> [u8; 32] {
-    let pk: PublicKey = s.parse().expect("bad derived key");
+fn try_parse_ed25519(s: &str) -> Option<[u8; 32]> {
+    let pk: PublicKey = s.parse().ok()?;
     let bytes = pk.as_bytes();
-    require!(bytes.len() == 33 && bytes[0] == 0, "derived key is not ed25519");
-    bytes[1..].try_into().unwrap()
+    if bytes.len() != 33 || bytes[0] != 0 {
+        return None;
+    }
+    bytes[1..].try_into().ok()
+}
+
+fn valid_request_id(id: &str) -> bool {
+    (16..=128).contains(&id.len())
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn ed25519_public_key(k: &[u8; 32]) -> PublicKey {

@@ -112,19 +112,29 @@ fn failed_funding_is_not_spent_and_never_signed() {
 }
 
 #[test]
-fn signature_from_the_signer_becomes_the_x402_payload() {
+fn missing_signature_still_counts_as_spent() {
     let mut c = contract();
     c.set_payer_keys_for_test(vec![[7u8; 32]]);
     requested(&mut c, "req_0000000000000001");
     funded(&mut c, "req_0000000000000001", 5_000);
     testing_env!(ctx(ALLOWANCE).build());
-    c.on_signed(
-        "req_0000000000000001".into(),
-        Ok(allowance::SignResponse { scheme: "Ed25519".into(), signature: vec![9u8; 64] }),
-    );
+    let _ = c.on_signed("req_0000000000000001".into(), Err(near_sdk::PromiseError::Failed));
     let p = c.get_signed_payment("req_0000000000000001".into()).unwrap();
-    assert_eq!(p.status, PaymentStatus::Signed);
-    let expected = allowance::delegate::FtTransferDelegate {
+    assert_eq!(p.status, PaymentStatus::SignatureUnavailable);
+    assert_eq!(p.signed_delegate_action, None);
+}
+
+// ---- signature handling -------------------------------------------------------------
+
+use ed25519_dalek::{Signer, SigningKey};
+use near_sdk::serde_json::json;
+
+fn payer_signing_key() -> SigningKey {
+    SigningKey::from_bytes(&[1u8; 32])
+}
+
+fn expected_delegate(public_key: [u8; 32]) -> allowance::delegate::FtTransferDelegate {
+    allowance::delegate::FtTransferDelegate {
         sender_id: acc("pay.allowance.owner.testnet"),
         token_id: acc("usdc.testnet"),
         payee: acc(PAYEE),
@@ -132,21 +142,121 @@ fn signature_from_the_signer_becomes_the_x402_payload() {
         nonce: 4_999_000_000,
         max_block_height: 5_060,
         gas: 30_000_000_000_000,
-        public_key: [7u8; 32],
+        public_key,
     }
-    .signed_delegate_action_base64(&[9u8; 64]);
-    assert_eq!(p.signed_delegate_action, Some(expected));
+}
+
+fn signed_contract() -> (Allowance, allowance::delegate::FtTransferDelegate) {
+    let key = payer_signing_key();
+    let pk = key.verifying_key().to_bytes();
+    let mut c = contract();
+    c.set_payer_keys_for_test(vec![pk]);
+    requested(&mut c, "req_0000000000000001");
+    funded(&mut c, "req_0000000000000001", 5_000);
+    (c, expected_delegate(pk))
+}
+
+fn respond(c: &mut Allowance, response: near_sdk::serde_json::Value) {
+    testing_env!(ctx(ALLOWANCE).build());
+    let _ = c.on_signed("req_0000000000000001".into(), Ok(response));
 }
 
 #[test]
-fn missing_signature_still_counts_as_spent() {
-    let mut c = contract();
-    c.set_payer_keys_for_test(vec![[7u8; 32]]);
-    requested(&mut c, "req_0000000000000001");
-    funded(&mut c, "req_0000000000000001", 5_000);
-    testing_env!(ctx(ALLOWANCE).build());
-    c.on_signed("req_0000000000000001".into(), Err(near_sdk::PromiseError::Failed));
+fn a_valid_signature_from_the_signer_becomes_the_x402_payload() {
+    let (mut c, d) = signed_contract();
+    let sig = payer_signing_key().sign(&d.signable_hash()).to_bytes();
+    respond(&mut c, json!({"scheme": "Ed25519", "signature": sig.to_vec()}));
+    let p = c.get_signed_payment("req_0000000000000001".into()).unwrap();
+    assert_eq!(p.status, PaymentStatus::Signed);
+    assert_eq!(p.signed_delegate_action, Some(d.signed_delegate_action_base64(&sig)));
+}
+
+#[test]
+fn a_signature_that_does_not_match_the_payment_is_not_stored() {
+    let (mut c, _) = signed_contract();
+    respond(&mut c, json!({"scheme": "Ed25519", "signature": vec![9u8; 64]}));
     let p = c.get_signed_payment("req_0000000000000001".into()).unwrap();
     assert_eq!(p.status, PaymentStatus::SignatureUnavailable);
     assert_eq!(p.signed_delegate_action, None);
+}
+
+#[test]
+fn an_unexpected_signer_response_ends_the_payment_instead_of_leaving_it_signing() {
+    let (mut c, _) = signed_contract();
+    respond(&mut c, json!({"scheme": "Secp256k1", "big_r": {"affine_point": "02ab"}, "s": {"scalar": "01"}}));
+    let p = c.get_signed_payment("req_0000000000000001".into()).unwrap();
+    assert_eq!(p.status, PaymentStatus::SignatureUnavailable);
+}
+
+#[test]
+fn the_signer_is_asked_to_sign_exactly_this_payments_hash_with_its_key_path() {
+    let (_, d) = signed_contract();
+    let sign_calls: Vec<_> = near_sdk::test_utils::get_created_receipts()
+        .into_iter()
+        .filter(|r| r.receiver_id == acc("v1.signer-prod.testnet"))
+        .flat_map(|r| r.actions)
+        .filter_map(|a| match a {
+            near_sdk::mock::MockAction::FunctionCallWeight {
+                method_name, args, attached_deposit, ..
+            } if method_name.as_slice() == b"sign".as_slice() => Some((args, attached_deposit)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sign_calls.len(), 1);
+    let (args, deposit) = &sign_calls[0];
+    let args: near_sdk::serde_json::Value = near_sdk::serde_json::from_slice(args).unwrap();
+    assert_eq!(
+        args,
+        json!({"request": {
+            "path": "x402/0",
+            "payload_v2": {"Eddsa": hex::encode(d.signable_hash())},
+            "domain_id": 1
+        }})
+    );
+    assert_eq!(*deposit, near_sdk::NearToken::from_yoctonear(1));
+}
+
+// ---- request id validation ----------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "request_id must be 16-128 characters of [A-Za-z0-9_-]")]
+fn a_short_request_id_is_rejected() {
+    let mut c = contract();
+    c.set_payer_keys_for_test(vec![[7u8; 32]]);
+    requested(&mut c, "short");
+}
+
+#[test]
+#[should_panic(expected = "request_id must be 16-128 characters of [A-Za-z0-9_-]")]
+fn a_request_id_with_other_characters_is_rejected() {
+    let mut c = contract();
+    c.set_payer_keys_for_test(vec![[7u8; 32]]);
+    requested(&mut c, "req_00000000000000/1");
+}
+
+// ---- Payer Account creation ---------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "payer account creation already in progress")]
+fn payer_account_creation_cannot_overlap() {
+    let mut c = contract();
+    testing_env!(ctx(OWNER).build());
+    let _ = c.create_payer_account(4);
+    let _ = c.create_payer_account(8);
+}
+
+#[test]
+fn payer_keys_are_only_recorded_once_the_account_exists() {
+    let mut c = contract();
+    testing_env!(ctx(OWNER).build());
+    let _ = c.create_payer_account(1);
+    let key = "ed25519:2SH6cXoPJ8nXiCu1Z3WYNLFNNj4ZYoaubiU1YwY3EcqX".to_string();
+    testing_env!(ctx(ALLOWANCE).build());
+    let _ = c.on_payer_created(vec![key.clone()], Err(near_sdk::PromiseError::Failed));
+    assert!(c.payer_keys().is_empty());
+    testing_env!(ctx(OWNER).build());
+    let _ = c.create_payer_account(1);
+    testing_env!(ctx(ALLOWANCE).build());
+    let _ = c.on_payer_created(vec![key.clone()], Ok(()));
+    assert_eq!(c.payer_keys(), vec![key]);
 }

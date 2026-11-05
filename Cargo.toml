@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["contracts/allowance"]
+members = ["contracts/allowance", "contracts/mock-signer", "contracts/mock-usdc"]
 
 [profile.release]
 codegen-units = 1

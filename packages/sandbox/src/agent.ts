@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { x402Client } from "@x402/core/client";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { ExactNearScheme } from "@x402/near/exact/client";
-import { NETWORK, type Harness } from "./harness.js";
+import { NETWORK, TGAS, type Harness } from "./harness.js";
 
 export type Outcome = "Approved" | "Pending" | "Blocked";
 export type Status =
@@ -39,7 +39,8 @@ export type SpendRequest = {
   outcome: Outcome;
   status: Status;
   blocked_reason: BlockedReason | null;
-  limit: { used: string; limit: string; retry_after_ns: number } | null;
+  limit: { used: string; limit: string; retry_after_ns: number | null } | null;
+  reserved_hour: number | null;
   payment: {
     key_index: number;
     public_key: string;
@@ -67,17 +68,39 @@ export function newRequestId(): string {
  * arrives later: see `waitForPayment`.
  */
 export async function requestSpend(h: Harness, args: SpendArgs): Promise<SpendRequest> {
-  return h.callNow<SpendRequest>(h.agent, h.allowance.accountId, "request_spend", {
+  return h.callNow<SpendRequest>(
+    h.agent,
+    h.allowance.accountId,
+    "request_spend",
+    {
     request_id: args.request_id,
     payee: args.payee,
     amount: args.amount.toString(),
     memo: args.memo ?? null,
     max_timeout_blocks: args.max_timeout_blocks,
-  });
+    },
+    SPEND_GAS,
+  );
 }
+
+/** request_spend plus the funding and signing callbacks it schedules (~130 TGas). */
+export const SPEND_GAS = 150n * TGAS;
 
 export async function getRequest(h: Harness, requestId: string): Promise<SpendRequest | null> {
   return h.view<SpendRequest | null>(h.allowance.accountId, "get_request", { request_id: requestId });
+}
+
+export type Budget = {
+  used_in_window: string;
+  daily_cap: string;
+  available: string;
+  next_release_ns: number | null;
+  velocity_used: number;
+  velocity_limit: number;
+};
+
+export async function getBudget(h: Harness): Promise<Budget> {
+  return h.view<Budget>(h.allowance.accountId, "get_budget");
 }
 
 /** Polls until the request is no longer moving money (Funding) or being signed (Signing). */

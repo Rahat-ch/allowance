@@ -60,6 +60,7 @@ fn allowance() -> Allowance {
         acc(SIGNER_ID),
         1,
         demo_policy(),
+        None,
     );
     c.set_payer_keys_for_test(vec![payer_signing_key().verifying_key().to_bytes()]);
     c.add_payee(acc(PAYEE));
@@ -149,7 +150,7 @@ fn setup_gives_the_agent_a_key_that_can_only_call_request_spend() {
 fn a_policy_whose_auto_limit_exceeds_its_hard_ceiling_is_refused() {
     ctx(OWNER, 1_000);
     let policy = Policy { auto_limit: U128(60 * USD), ..demo_policy() };
-    Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, policy);
+    Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, policy, None);
 }
 
 #[test]
@@ -216,7 +217,7 @@ fn a_payee_not_on_the_allowlist_is_blocked() {
 #[test]
 fn an_empty_allowlist_blocks_everything() {
     ctx(OWNER, 1_000);
-    let mut c = Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, demo_policy());
+    let mut c = Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, demo_policy(), None);
     c.set_payer_keys_for_test(vec![[7u8; 32]]);
     let r = spend(&mut c, ID, PAYEE, 1);
     assert_blocked(&r, BlockedReason::UnknownPayee);
@@ -231,7 +232,11 @@ fn a_spend_over_the_hard_ceiling_is_blocked() {
 
 #[test]
 fn exactly_the_hard_ceiling_is_allowed_with_approval() {
-    let mut c = allowance();
+    ctx(OWNER, 1_000);
+    let policy = Policy { daily_cap: U128(100 * USD), ..demo_policy() };
+    let mut c = Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, policy, None);
+    c.set_payer_keys_for_test(vec![[7u8; 32]]);
+    c.add_payee(acc(PAYEE));
     assert_eq!(spend(&mut c, ID, PAYEE, 50 * USD).outcome, Outcome::Pending);
 }
 
@@ -483,7 +488,7 @@ fn a_missing_signature_still_counts_as_spent() {
 #[should_panic(expected = "payer account creation already in progress")]
 fn payer_account_creation_cannot_overlap() {
     ctx(OWNER, 1_000);
-    let mut c = Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, demo_policy());
+    let mut c = Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, demo_policy(), None);
     let _ = c.create_payer_account(4);
     let _ = c.create_payer_account(8);
 }
@@ -491,7 +496,7 @@ fn payer_account_creation_cannot_overlap() {
 #[test]
 fn payer_keys_are_only_recorded_once_the_account_exists() {
     ctx(OWNER, 1_000);
-    let mut c = Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, demo_policy());
+    let mut c = Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, demo_policy(), None);
     let _ = c.create_payer_account(1);
     let key = "ed25519:2SH6cXoPJ8nXiCu1Z3WYNLFNNj4ZYoaubiU1YwY3EcqX".to_string();
     ctx(ALLOWANCE, 1_000);
@@ -538,5 +543,5 @@ fn a_retry_while_funding_or_signing_or_after_either_fails_never_pays_again() {
 fn a_policy_whose_auto_limit_exceeds_its_daily_cap_is_refused() {
     ctx(OWNER, 1_000);
     let policy = Policy { daily_cap: U128(USD), ..demo_policy() };
-    Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, policy);
+    Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, policy, None);
 }

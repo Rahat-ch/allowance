@@ -100,7 +100,7 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     createAccount("usdc", 10n),
     createAccount("signer", 10n),
     createAccount("owner", 50n),
-    createAccount("allowance", 20n),
+    createAccount("allowance", 50n),
     createAccount("relayer", 20n),
     createAccount("payee", 5n),
   ]);
@@ -128,6 +128,8 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
       domain_id: ED25519_DOMAIN_ID,
       agent_public_key: agentKey.getPublicKey().toString(),
       policy,
+      // Sandbox gas is ~10x testnet's price, so give the Agent's key plenty.
+      agent_allowance: (20n * NEAR).toString(),
     },
   });
   // The Agent: a function-call key on the Allowance account that may only call request_spend.

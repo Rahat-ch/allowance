@@ -35,8 +35,8 @@ pub enum BlockedReason {
 pub struct LimitDetail {
     pub used: U128,
     pub limit: U128,
-    /// Block timestamp (ns) from which a retry can fit.
-    pub retry_after_ns: u64,
+    /// Block timestamp (ns) from which a retry can fit; None if it never can.
+    pub retry_after_ns: Option<u64>,
 }
 
 /// Where a Spend Request is in its lifecycle.
@@ -86,6 +86,9 @@ pub struct SpendRequest {
     pub status: Status,
     pub blocked_reason: Option<BlockedReason>,
     pub limit: Option<LimitDetail>,
+    /// Hour bucket holding this request's Reservation against the Daily Cap; None once
+    /// released (or if it never had one).
+    pub reserved_hour: Option<u64>,
     pub payment: Option<SignedPayment>,
 }
 

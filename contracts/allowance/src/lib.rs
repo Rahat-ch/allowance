@@ -1,17 +1,26 @@
 //! Allowance: an on-chain budget an AI Agent can spend through x402 Signed Payments.
 //!
-//! Ticket #2 tracer: the contract creates its Payer Account with keys derived through
-//! Chain Signatures, and issues one Signed Payment (an x402 `exact` NEP-366 delegate
-//! holding a single `ft_transfer`) that it builds and has signed itself (ADR 0003).
+//! The Agent submits Spend Requests; each gets an Outcome (Approved, Pending or Blocked)
+//! under the Owner's Policy. Approved spends are paid as x402 `exact` Signed Payments: a
+//! NEP-366 delegate from the Payer Account that this contract builds and has signed
+//! through Chain Signatures itself (ADR 0003).
 
 pub mod delegate;
+pub mod events;
+pub mod policy;
+pub mod request;
 
 use delegate::FtTransferDelegate;
 use near_sdk::json_types::U128;
-use near_sdk::store::LookupMap;
+use near_sdk::serde_json::json;
+use near_sdk::store::{IterableSet, LookupMap, Vector};
 use near_sdk::{
     AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue, PublicKey,
     env, ext_contract, near, require,
+};
+use policy::Policy;
+use request::{
+    BlockedReason, MAX_MEMO_BYTES, Outcome, SignedPayment, SpendRequest, Status, valid_request_id,
 };
 
 /// Gas the inner `ft_transfer` of a Signed Payment may use (x402's default).
@@ -24,36 +33,10 @@ const FT_STORAGE_DEPOSIT: NearToken = NearToken::from_micronear(1_250);
 const SIGN_GAS: Gas = Gas::from_tgas(50);
 /// Largest signer response `on_signed` reads; a real one is ~300 bytes.
 const SIGN_RESPONSE_MAX_BYTES: usize = 2_048;
-
-#[near(serializers = [json, borsh])]
-#[derive(Clone, Debug, PartialEq)]
-pub enum PaymentStatus {
-    /// Moving the amount from the Allowance into the Payer Account.
-    Funding,
-    /// The delegate is built and sent to the signer. Counts as spent from here on.
-    Signing,
-    /// The Signed Payment is ready for the Agent to hand to the seller.
-    Signed,
-    /// Funding failed before anything was sent to the signer; nothing was spent.
-    FundingFailed,
-    /// The signer didn't deliver a signature. Still counts as spent (ADR 0003).
-    SignatureUnavailable,
-}
-
-#[near(serializers = [json, borsh])]
-#[derive(Clone, Debug)]
-pub struct SignedPayment {
-    pub status: PaymentStatus,
-    pub payee: AccountId,
-    pub amount: U128,
-    pub key_index: u32,
-    pub max_timeout_blocks: u64,
-    pub public_key: Option<String>,
-    pub nonce: Option<u64>,
-    pub max_block_height: Option<u64>,
-    /// Base64 borsh `SignedDelegateAction`, the x402 `exact` NEAR payload.
-    pub signed_delegate_action: Option<String>,
-}
+/// Gas allowance on the Agent's function-call key.
+const AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_near(1);
+/// The only method the Agent's key may call.
+pub const AGENT_METHOD: &str = "request_spend";
 
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
@@ -62,14 +45,21 @@ pub struct Allowance {
     asset_id: AccountId,
     signer_id: AccountId,
     domain_id: u64,
+    policy: Policy,
+    allowlist: IterableSet<AccountId>,
+    paused: bool,
+    revoked: bool,
     /// Ed25519 public keys of the Payer Account, derived for paths `x402/<index>`.
     payer_keys: Vec<[u8; 32]>,
     /// Highest delegate nonce used per Payer Account key.
     last_nonce: Vec<u64>,
-    payments: LookupMap<String, SignedPayment>,
-    payment_count: u64,
     /// True while `create_payer_account` is waiting on its callbacks.
     payer_creating: bool,
+    requests: LookupMap<String, SpendRequest>,
+    /// Stored Request IDs in submission order, for paging.
+    request_ids: Vector<String>,
+    /// Signed Payments issued so far (picks the next Payer Account key).
+    issued_count: u64,
 }
 
 // ---- external interfaces -------------------------------------------------------------
@@ -115,19 +105,56 @@ trait FungibleToken {
 
 #[near]
 impl Allowance {
+    /// Sets up the Allowance and gives the Agent a function-call key on this account that
+    /// can call only `request_spend`.
     #[init]
-    pub fn new(owner_id: AccountId, asset_id: AccountId, signer_id: AccountId, domain_id: u64) -> Self {
+    pub fn new(
+        owner_id: AccountId,
+        agent_public_key: PublicKey,
+        asset_id: AccountId,
+        signer_id: AccountId,
+        domain_id: u64,
+        policy: Policy,
+    ) -> Self {
+        policy.assert_valid();
+        Promise::new(env::current_account_id())
+            .add_access_key_allowance(
+                agent_public_key,
+                near_sdk::Allowance::limited(AGENT_KEY_ALLOWANCE).unwrap(),
+                env::current_account_id(),
+                AGENT_METHOD,
+            )
+            .detach();
         Self {
             owner_id,
             asset_id,
             signer_id,
             domain_id,
+            policy,
+            allowlist: IterableSet::new(b"a"),
+            paused: false,
+            revoked: false,
             payer_keys: Vec::new(),
             last_nonce: Vec::new(),
-            payments: LookupMap::new(b"p"),
-            payment_count: 0,
             payer_creating: false,
+            requests: LookupMap::new(b"r"),
+            request_ids: Vector::new(b"i"),
+            issued_count: 0,
         }
+    }
+
+    // ---- views ----------------------------------------------------------------------
+
+    pub fn get_policy(&self) -> Policy {
+        self.policy.clone()
+    }
+
+    pub fn get_allowlist(&self) -> Vec<AccountId> {
+        self.allowlist.iter().cloned().collect()
+    }
+
+    pub fn get_request(&self, request_id: String) -> Option<SpendRequest> {
+        self.requests.get(&request_id).cloned()
     }
 
     /// The Payer Account: a sub-account only this contract can sign for.
@@ -136,18 +163,22 @@ impl Allowance {
     }
 
     pub fn payer_keys(&self) -> Vec<String> {
-        self.payer_keys.iter().map(|k| ed25519_string(k)).collect()
+        self.payer_keys.iter().map(ed25519_string).collect()
     }
 
-    pub fn get_signed_payment(&self, request_id: String) -> Option<SignedPayment> {
-        self.payments.get(&request_id).cloned()
+    // ---- Owner ----------------------------------------------------------------------
+
+    pub fn add_payee(&mut self, payee: AccountId) {
+        self.assert_owner();
+        if self.allowlist.insert(payee.clone()) {
+            events::emit("payee_added", json!({ "payee": payee }));
+        }
     }
 
-    /// Owner only. Fetches `key_count` derived keys from the signer, then creates the Payer
-    /// Account holding only those keys and registers it with the USDC contract.
-    #[payable]
+    /// Fetches `key_count` derived keys from the signer, then creates the Payer Account
+    /// holding only those keys and registers it with the USDC contract.
     pub fn create_payer_account(&mut self, key_count: u32) -> Promise {
-        require!(env::predecessor_account_id() == self.owner_id, "only the Owner");
+        self.assert_owner();
         require!(self.payer_keys.is_empty(), "payer account already created");
         require!(!self.payer_creating, "payer account creation already in progress");
         require!((1..=32).contains(&key_count), "key_count must be 1..=32");
@@ -171,6 +202,71 @@ impl Allowance {
                 .on_payer_keys(key_count),
         )
     }
+
+    // ---- Agent ----------------------------------------------------------------------
+
+    /// The Agent asks to pay `amount` to `payee`. Returns the Spend Request with its
+    /// Outcome. An Approved request's Signed Payment is issued asynchronously: poll
+    /// `get_request` until its status is `Signed`.
+    ///
+    /// Re-submitting a Request ID with the same Payee, amount and memo returns the
+    /// request as it is now, never a second payment. Different details are refused
+    /// (Blocked, IdempotencyConflict) without storing anything.
+    pub fn request_spend(
+        &mut self,
+        request_id: String,
+        payee: AccountId,
+        amount: U128,
+        memo: Option<String>,
+        max_timeout_blocks: u64,
+    ) -> SpendRequest {
+        self.assert_agent();
+        require!(
+            valid_request_id(&request_id),
+            "request_id must be 16-128 characters of [A-Za-z0-9_-]"
+        );
+
+        if let Some(existing) = self.requests.get(&request_id) {
+            if existing.same_details(&payee, amount, &memo) {
+                return existing.clone();
+            }
+            let conflict = SpendRequest {
+                outcome: Outcome::Blocked,
+                status: Status::Blocked,
+                blocked_reason: Some(BlockedReason::IdempotencyConflict),
+                limit: None,
+                payment: None,
+                ..self.new_request(request_id, payee, amount, memo, max_timeout_blocks)
+            };
+            emit_outcome(&conflict);
+            return conflict;
+        }
+
+        let mut request = self.new_request(request_id, payee, amount, memo, max_timeout_blocks);
+        match self.evaluate(&request) {
+            Err(reason) => {
+                request.outcome = Outcome::Blocked;
+                request.status = Status::Blocked;
+                request.blocked_reason = Some(reason);
+            }
+            Ok(Outcome::Pending) => {
+                request.outcome = Outcome::Pending;
+                request.status = Status::Pending;
+            }
+            Ok(_) => {
+                request.outcome = Outcome::Approved;
+                request.status = Status::Funding;
+            }
+        }
+        emit_outcome(&request);
+        self.store(&request);
+        if request.status == Status::Funding {
+            self.issue_signed_payment(&request.request_id);
+        }
+        request
+    }
+
+    // ---- callbacks ------------------------------------------------------------------
 
     /// Receives the derived keys and creates the Payer Account with only those keys.
     /// Keys are recorded only once the account exists (see `on_payer_created`).
@@ -231,80 +327,40 @@ impl Allowance {
         )
     }
 
-    /// Agent only (its function-call key lives on this account, so it calls as itself).
-    /// Tracer for ticket #2: issues one Signed Payment with no Policy checks yet.
-    pub fn tracer_sign(
-        &mut self,
-        request_id: String,
-        payee: AccountId,
-        amount: U128,
-        max_timeout_blocks: u64,
-    ) -> Promise {
-        require!(
-            env::predecessor_account_id() == env::current_account_id(),
-            "only the Agent can request a Signed Payment"
-        );
-        require!(
-            valid_request_id(&request_id),
-            "request_id must be 16-128 characters of [A-Za-z0-9_-]"
-        );
-        require!(!self.payments.contains_key(&request_id), "request id already used");
-        require!(!self.payer_keys.is_empty(), "payer account not created");
-        require!(amount.0 > 0, "amount must be positive");
-        require!((1..=600).contains(&max_timeout_blocks), "max_timeout_blocks must be 1..=600");
-
-        let key_index = (self.payment_count % self.payer_keys.len() as u64) as u32;
-        self.payment_count += 1;
-        self.payments.insert(
-            request_id.clone(),
-            SignedPayment {
-                status: PaymentStatus::Funding,
-                payee,
-                amount,
-                key_index,
-                max_timeout_blocks,
-                public_key: None,
-                nonce: None,
-                max_block_height: None,
-                signed_delegate_action: None,
-            },
-        );
-        ext_ft::ext(self.asset_id.clone())
-            .with_attached_deposit(NearToken::from_yoctonear(1))
-            .with_static_gas(Gas::from_tgas(15))
-            .ft_transfer(self.payer_account_id(), amount, None)
-            .then(
-                Self::ext(env::current_account_id())
-                    .with_static_gas(Gas::from_tgas(100))
-                    .on_payer_funded(request_id),
-            )
-    }
-
+    /// The amount is in the Payer Account (or not). Builds the delegate and sends it to
+    /// the signer; from here on the spend counts as spent.
     #[private]
     pub fn on_payer_funded(
         &mut self,
         request_id: String,
         #[callback_result] funded: Result<(), PromiseError>,
     ) -> PromiseOrValue<()> {
-        let mut p = self.payments.get(&request_id).cloned().expect("unknown request");
+        let mut r = self.requests.get(&request_id).cloned().expect("unknown request");
         if funded.is_err() {
-            p.status = PaymentStatus::FundingFailed;
-            self.payments.insert(request_id, p);
+            r.status = Status::FundingFailed;
+            events::emit("funding_failed", json!({ "request_id": r.request_id, "amount": r.amount, "payee": r.payee }));
+            self.requests.insert(request_id, r);
             return PromiseOrValue::Value(());
         }
-        let k = p.key_index as usize;
+        let k = (self.issued_count % self.payer_keys.len() as u64) as usize;
+        self.issued_count += 1;
         let height = env::block_height();
         // The nonce must exceed the key's on-chain nonce (keys start at their creation height
         // x 1e6) and stay below the facilitator's final height x 1e6, so use the previous
         // block's range plus a per-key sequence.
         let nonce = ((height - 1) * 1_000_000).max(self.last_nonce[k] + 1);
         self.last_nonce[k] = nonce;
-        p.status = PaymentStatus::Signing;
-        p.public_key = Some(ed25519_string(&self.payer_keys[k]));
-        p.nonce = Some(nonce);
-        p.max_block_height = Some(height + p.max_timeout_blocks);
-        let d = self.delegate_for(&p);
-        self.payments.insert(request_id.clone(), p);
+        let payment = SignedPayment {
+            key_index: k as u32,
+            public_key: ed25519_string(&self.payer_keys[k]),
+            nonce,
+            max_block_height: height + r.max_timeout_blocks,
+            signed_delegate_action: None,
+        };
+        let hash = self.delegate_for(&r, &payment).signable_hash();
+        r.status = Status::Signing;
+        r.payment = Some(payment);
+        self.requests.insert(request_id.clone(), r);
 
         PromiseOrValue::Promise(
             ext_signer::ext(self.signer_id.clone())
@@ -312,7 +368,7 @@ impl Allowance {
                 .with_static_gas(SIGN_GAS)
                 .sign(SignRequest {
                     path: derivation_path(k as u32),
-                    payload_v2: SignPayload::Eddsa(hex::encode(d.signable_hash())),
+                    payload_v2: SignPayload::Eddsa(hex::encode(hash)),
                     domain_id: self.domain_id,
                 })
                 .then(
@@ -333,35 +389,132 @@ impl Allowance {
         let signed = env::promise_result_checked(0, SIGN_RESPONSE_MAX_BYTES)
             .ok()
             .and_then(|raw| near_sdk::serde_json::from_slice::<near_sdk::serde_json::Value>(&raw).ok());
-        let mut p = self.payments.get(&request_id).cloned().expect("unknown request");
-        let d = self.delegate_for(&p);
+        let mut r = self.requests.get(&request_id).cloned().expect("unknown request");
+        let mut payment = r.payment.clone().expect("payment built before signing");
+        let d = self.delegate_for(&r, &payment);
+        let public_key = self.payer_keys[payment.key_index as usize];
         let sig: Option<[u8; 64]> = signed
             .and_then(|v| near_sdk::serde_json::from_value::<SignResponse>(v).ok())
-            .filter(|r| r.scheme == "Ed25519")
-            .and_then(|r| r.signature.try_into().ok())
-            .filter(|sig| {
-                env::ed25519_verify(sig, &d.signable_hash(), &self.payer_keys[p.key_index as usize])
-            });
+            .filter(|s| s.scheme == "Ed25519")
+            .and_then(|s| s.signature.try_into().ok())
+            .filter(|sig| env::ed25519_verify(sig, &d.signable_hash(), &public_key));
         match sig {
             Some(sig) => {
-                p.signed_delegate_action = Some(d.signed_delegate_action_base64(&sig));
-                p.status = PaymentStatus::Signed;
+                payment.signed_delegate_action = Some(d.signed_delegate_action_base64(&sig));
+                r.status = Status::Signed;
+                events::emit(
+                    "signed_payment_issued",
+                    json!({
+                        "request_id": r.request_id, "amount": r.amount, "payee": r.payee,
+                        "nonce": payment.nonce, "max_block_height": payment.max_block_height,
+                    }),
+                );
             }
-            None => p.status = PaymentStatus::SignatureUnavailable,
+            None => {
+                r.status = Status::SignatureUnavailable;
+                events::emit(
+                    "signature_unavailable",
+                    json!({ "request_id": r.request_id, "amount": r.amount, "payee": r.payee }),
+                );
+            }
         }
-        self.payments.insert(request_id, p);
+        r.payment = Some(payment);
+        self.requests.insert(request_id, r);
     }
 }
 
 impl Allowance {
-    fn delegate_for(&self, p: &SignedPayment) -> FtTransferDelegate {
+    fn assert_owner(&self) {
+        require!(env::predecessor_account_id() == self.owner_id, "only the Owner");
+    }
+
+    /// The Agent's function-call key lives on this account, so the Agent calls as itself.
+    fn assert_agent(&self) {
+        require!(
+            env::predecessor_account_id() == env::current_account_id(),
+            "only the Agent can submit Spend Requests"
+        );
+    }
+
+    fn new_request(
+        &self,
+        request_id: String,
+        payee: AccountId,
+        amount: U128,
+        memo: Option<String>,
+        max_timeout_blocks: u64,
+    ) -> SpendRequest {
+        SpendRequest {
+            request_id,
+            payee,
+            amount,
+            memo,
+            max_timeout_blocks,
+            requested_at_ns: env::block_timestamp(),
+            outcome: Outcome::Blocked,
+            status: Status::Blocked,
+            blocked_reason: None,
+            limit: None,
+            payment: None,
+        }
+    }
+
+    /// The Policy, in the spec's order. Ok is Approved or Pending; Err is why it's Blocked.
+    fn evaluate(&self, r: &SpendRequest) -> Result<Outcome, BlockedReason> {
+        if self.revoked {
+            return Err(BlockedReason::Revoked);
+        }
+        if self.paused {
+            return Err(BlockedReason::Paused);
+        }
+        let memo_ok = r.memo.as_ref().is_none_or(|m| m.len() <= MAX_MEMO_BYTES);
+        let timeout_ok = (1..=self.policy.max_timeout_blocks).contains(&r.max_timeout_blocks);
+        if r.amount.0 == 0 || !memo_ok || !timeout_ok || self.payer_keys.is_empty() {
+            return Err(BlockedReason::InvalidRequest);
+        }
+        if !self.allowlist.contains(&r.payee) {
+            return Err(BlockedReason::UnknownPayee);
+        }
+        if r.amount.0 > self.policy.hard_ceiling.0 {
+            return Err(BlockedReason::OverHardCeiling);
+        }
+        // Velocity Limit and Daily Cap: ticket #5.
+        if r.amount.0 <= self.policy.auto_limit.0 {
+            Ok(Outcome::Approved)
+        } else {
+            Ok(Outcome::Pending)
+        }
+    }
+
+    fn store(&mut self, r: &SpendRequest) {
+        self.requests.insert(r.request_id.clone(), r.clone());
+        self.request_ids.push(r.request_id.clone());
+    }
+
+    /// Moves the amount into the Payer Account, then (in `on_payer_funded`) builds and
+    /// signs the delegate.
+    fn issue_signed_payment(&self, request_id: &str) {
+        let r = self.requests.get(request_id).expect("stored");
+        ext_ft::ext(self.asset_id.clone())
+            .with_attached_deposit(NearToken::from_yoctonear(1))
+            .with_static_gas(Gas::from_tgas(15))
+            .ft_transfer(self.payer_account_id(), r.amount, None)
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(100))
+                    .on_payer_funded(request_id.to_string()),
+            )
+            .detach();
+    }
+
+    fn delegate_for(&self, r: &SpendRequest, p: &SignedPayment) -> FtTransferDelegate {
         FtTransferDelegate {
             sender_id: self.payer_account_id(),
             token_id: self.asset_id.clone(),
-            payee: p.payee.clone(),
-            amount: p.amount.0,
-            nonce: p.nonce.expect("nonce set"),
-            max_block_height: p.max_block_height.expect("height set"),
+            payee: r.payee.clone(),
+            amount: r.amount.0,
+            nonce: p.nonce,
+            max_block_height: p.max_block_height,
             gas: FT_TRANSFER_GAS,
             public_key: self.payer_keys[p.key_index as usize],
         }
@@ -373,6 +526,19 @@ impl Allowance {
         self.last_nonce = vec![0; keys.len()];
         self.payer_keys = keys;
     }
+}
+
+fn emit_outcome(r: &SpendRequest) {
+    events::emit(
+        "spend_request",
+        json!({
+            "request_id": r.request_id,
+            "payee": r.payee,
+            "amount": r.amount,
+            "outcome": r.outcome,
+            "blocked_reason": r.blocked_reason,
+        }),
+    );
 }
 
 /// Chain Signatures derivation path of Payer Account key `index`.
@@ -387,11 +553,6 @@ fn try_parse_ed25519(s: &str) -> Option<[u8; 32]> {
         return None;
     }
     bytes[1..].try_into().ok()
-}
-
-fn valid_request_id(id: &str) -> bool {
-    (16..=128).contains(&id.len())
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn ed25519_public_key(k: &[u8; 32]) -> PublicKey {

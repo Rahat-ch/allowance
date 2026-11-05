@@ -7,5 +7,5 @@ We chose this because it is the only way the cap stays exact. If Pending spends 
 ## Consequences
 
 - Pending spends Expire after 24 hours so a forgotten approval can't hold the cap forever.
-- A failed payment returns its Reservation; a Rejected or Expired spend releases it.
+- A Rejected or Expired spend releases its Reservation. A Signed Payment keeps it for the rest of the window, even if the Payee never collects it, because the Allowance can't observe settlement (see ADR 0003).
 - The Owner can only Withdraw funds not held by a Reservation, for the same reason.

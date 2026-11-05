@@ -67,10 +67,10 @@ _Avoid_: Payment, transaction, spend attempt
 The verdict on a Spend Request: Approved, Pending, or Blocked.
 
 **Approved**:
-The Spend Request is within Policy and at most the Auto Limit, so it is paid immediately.
+The Spend Request is within Policy and at most the Auto Limit, so a Signed Payment is issued immediately.
 
 **Pending**:
-The Spend Request is within Policy but above the Auto Limit, so it waits for the Owner to approve or reject it. It holds a Reservation while it waits, and Expires after 24 hours without a decision.
+The Spend Request is within Policy but above the Auto Limit, so it waits for the Owner to approve or reject it. It holds a Reservation while it waits, and Expires after 24 hours without a decision. Once approved, a Signed Payment is issued.
 _Avoid_: Escalated, held, queued
 
 **Rejected**:
@@ -80,21 +80,23 @@ A Pending spend the Owner turned down. Its Reservation is released.
 A Pending spend nobody decided on within 24 hours. Treated like Rejected.
 
 **Reservation**:
-The amount set aside against the Daily Cap the moment a spend is Approved or Pending, before any money moves. Reservations are what stop many small requests from slipping past the cap together.
+The amount set aside against the Daily Cap the moment a spend is Approved or Pending, before any money moves. A Rejected or Expired spend releases it; a Signed Payment keeps it for the rest of the window. Reservations are what stop many small requests from slipping past the cap together.
 _Avoid_: Hold, lock
 
 **Risk Check**:
 An independent review of a Spend Request that can only escalate it: a flagged spend that would be Approved becomes Pending. It can never approve or block anything.
 
 **Request ID**:
-The Agent's own identifier for a Spend Request. It is bound forever to its first amount and Payee: an identical retry gets back the original Outcome and never pays twice, and a retry with different details is Blocked.
+The Agent's own identifier for a Spend Request. It is bound forever to its first amount and Payee: an identical retry gets back the original Outcome and the same Signed Payment, so it never pays twice, and a retry with different details is Blocked.
 _Avoid_: Nonce, idempotency key
 
-**Paid**:
-An Approved spend whose payment reached the Payee. Only Paid spends count as proof of payment to a Payee.
+**Signed Payment**:
+The exact, ready-to-submit x402 payment the Allowance builds and signs for an approved spend: this amount, to this Payee, valid for a short time. The Agent hands it to the Payee, who collects it. It counts as spent the moment it is issued, whether or not the Payee ever collects it. It is the only way money leaves an Allowance to a Payee.
+_Avoid_: Payment authorization, voucher, receipt
 
-**Failed**:
-An Approved spend whose payment didn't go through. No money left the Allowance, so its Reservation and Velocity Limit slot are given back. Retrying needs a new Request ID.
+**Payer Account**:
+The account Signed Payments draw from. Only the Allowance can sign for it; neither the Agent nor the Owner holds its key.
+_Avoid_: Hot wallet, spending account
 
 **Velocity Limit**:
 The most Spend Requests the Agent may have Approved or Pending in any rolling hour. Blocked requests don't count.

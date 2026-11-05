@@ -5,11 +5,13 @@
 //! NEP-366 delegate from the Payer Account that this contract builds and has signed
 //! through Chain Signatures itself (ADR 0003).
 
+pub mod budget;
 pub mod delegate;
 pub mod events;
 pub mod policy;
 pub mod request;
 
+use budget::{Budget, CapUsage, Shortfall, hour_of};
 use delegate::FtTransferDelegate;
 use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
@@ -20,7 +22,7 @@ use near_sdk::{
 };
 use policy::Policy;
 use request::{
-    BlockedReason, MAX_MEMO_BYTES, Outcome, SignedPayment, SpendRequest, Status, valid_request_id,
+    BlockedReason, LimitDetail, MAX_MEMO_BYTES, Outcome, SignedPayment, SpendRequest, Status, valid_request_id,
 };
 
 /// Gas the inner `ft_transfer` of a Signed Payment may use (x402's default).
@@ -35,8 +37,8 @@ const SIGN_GAS: Gas = Gas::from_tgas(50);
 const ON_SIGNED_GAS: Gas = Gas::from_tgas(30);
 /// Largest signer response `on_signed` reads; a real one is ~300 bytes.
 const SIGN_RESPONSE_MAX_BYTES: usize = 2_048;
-/// Gas allowance on the Agent's function-call key.
-const AGENT_KEY_ALLOWANCE: NearToken = NearToken::from_near(1);
+/// Default NEAR the Agent's function-call key may spend on gas before the Owner replaces it.
+const DEFAULT_AGENT_ALLOWANCE: NearToken = NearToken::from_near(1);
 /// The only method the Agent's key may call.
 pub const AGENT_METHOD: &str = "request_spend";
 
@@ -57,6 +59,8 @@ pub struct Allowance {
     last_nonce: Vec<u64>,
     /// True while `create_payer_account` is waiting on its callbacks.
     payer_creating: bool,
+    /// Daily Cap Reservations and Velocity counts by hour.
+    budget: Budget,
     requests: LookupMap<String, SpendRequest>,
     /// Stored Request IDs in submission order, for paging.
     request_ids: Vector<String>,
@@ -108,7 +112,8 @@ trait FungibleToken {
 #[near]
 impl Allowance {
     /// Sets up the Allowance and gives the Agent a function-call key on this account that
-    /// can call only `request_spend`.
+    /// can call only `request_spend`, with `agent_allowance` yoctoNEAR for gas (default 1 NEAR;
+    /// a Spend Request attaches ~150 TGas).
     #[init]
     pub fn new(
         owner_id: AccountId,
@@ -117,12 +122,14 @@ impl Allowance {
         signer_id: AccountId,
         domain_id: u64,
         policy: Policy,
+        agent_allowance: Option<NearToken>,
     ) -> Self {
         policy.assert_valid();
+        let agent_allowance = agent_allowance.unwrap_or(DEFAULT_AGENT_ALLOWANCE);
         Promise::new(env::current_account_id())
             .add_access_key_allowance(
                 agent_public_key,
-                near_sdk::Allowance::limited(AGENT_KEY_ALLOWANCE).unwrap(),
+                near_sdk::Allowance::limited(agent_allowance).expect("agent_allowance must be positive"),
                 env::current_account_id(),
                 AGENT_METHOD,
             )
@@ -139,6 +146,7 @@ impl Allowance {
             payer_keys: Vec::new(),
             last_nonce: Vec::new(),
             payer_creating: false,
+            budget: Budget::new(b"b", b"c"),
             requests: LookupMap::new(b"r"),
             request_ids: Vector::new(b"i"),
             issued_count: 0,
@@ -153,6 +161,11 @@ impl Allowance {
 
     pub fn get_allowlist(&self) -> Vec<AccountId> {
         self.allowlist.iter().cloned().collect()
+    }
+
+    /// Daily Cap and Velocity usage right now, Reservations included.
+    pub fn get_budget(&self) -> CapUsage {
+        self.budget.usage(now_hour(), self.policy.daily_cap.0, self.policy.velocity_limit)
     }
 
     pub fn get_request(&self, request_id: String) -> Option<SpendRequest> {
@@ -251,23 +264,23 @@ impl Allowance {
 
         let mut request = self.new_request(request_id, payee, amount, memo, max_timeout_blocks);
         match self.evaluate(&request) {
-            Err(reason) => {
+            Err((reason, limit)) => {
                 request.outcome = Outcome::Blocked;
                 request.status = Status::Blocked;
                 request.blocked_reason = Some(reason);
+                request.limit = limit;
                 // Never store an over-long memo: it would let the Agent drain this account's
                 // NEAR through storage.
                 if request.memo.as_ref().is_some_and(|m| m.len() > MAX_MEMO_BYTES) {
                     request.memo = None;
                 }
             }
-            Ok(Outcome::Pending) => {
-                request.outcome = Outcome::Pending;
-                request.status = Status::Pending;
-            }
-            Ok(_) => {
-                request.outcome = Outcome::Approved;
-                request.status = Status::Funding;
+            Ok(outcome) => {
+                let hour = now_hour();
+                self.budget.reserve(hour, request.amount.0);
+                request.reserved_hour = Some(hour);
+                request.outcome = outcome;
+                request.status = if outcome == Outcome::Pending { Status::Pending } else { Status::Funding };
             }
         }
         emit_outcome(&request);
@@ -349,6 +362,10 @@ impl Allowance {
     ) -> PromiseOrValue<()> {
         let mut r = self.requests.get(&request_id).cloned().expect("unknown request");
         if funded.is_err() {
+            // Nothing left the Allowance, so the Reservation is released (Velocity is not).
+            if let Some(hour) = r.reserved_hour.take() {
+                self.budget.release(hour, r.amount.0);
+            }
             r.status = Status::FundingFailed;
             events::emit("funding_failed", json!({ "request_id": r.request_id, "amount": r.amount, "payee": r.payee }));
             self.requests.insert(request_id, r);
@@ -370,6 +387,11 @@ impl Allowance {
             signed_delegate_action: None,
         };
         let hash = self.delegate_for(&r, &payment).signable_hash();
+        // Issued now: the spend counts for a full window from this hour.
+        let issue_hour = now_hour();
+        if let Some(hour) = r.reserved_hour.replace(issue_hour) {
+            self.budget.rebucket(hour, issue_hour, r.amount.0);
+        }
         r.status = Status::Signing;
         r.payment = Some(payment);
         self.requests.insert(request_id.clone(), r);
@@ -467,12 +489,31 @@ impl Allowance {
             status: Status::Blocked,
             blocked_reason: None,
             limit: None,
+            reserved_hour: None,
             payment: None,
         }
     }
 
-    /// The Policy, in the spec's order. Ok is Approved or Pending; Err is why it's Blocked.
-    fn evaluate(&self, r: &SpendRequest) -> Result<Outcome, BlockedReason> {
+    /// The Policy, in the spec's order. Ok is Approved or Pending; Err is why it's Blocked,
+    /// with how much is used and when a retry fits for the limits the Agent can wait out.
+    fn evaluate(&self, r: &SpendRequest) -> Result<Outcome, (BlockedReason, Option<LimitDetail>)> {
+        self.check(r).map_err(|reason| (reason, None))?;
+        let hour = now_hour();
+        self.budget
+            .check_velocity(hour, self.policy.velocity_limit)
+            .map_err(|s| (BlockedReason::VelocityExceeded, Some(limit_detail(s))))?;
+        self.budget
+            .check_cap(hour, r.amount.0, self.policy.daily_cap.0)
+            .map_err(|s| (BlockedReason::DailyCapExceeded, Some(limit_detail(s))))?;
+        if r.amount.0 <= self.policy.auto_limit.0 {
+            Ok(Outcome::Approved)
+        } else {
+            Ok(Outcome::Pending)
+        }
+    }
+
+    /// Everything before the rolling limits: Revoked, Paused, validity, Allowlist, Hard Ceiling.
+    fn check(&self, r: &SpendRequest) -> Result<(), BlockedReason> {
         if self.revoked {
             return Err(BlockedReason::Revoked);
         }
@@ -490,12 +531,7 @@ impl Allowance {
         if r.amount.0 > self.policy.hard_ceiling.0 {
             return Err(BlockedReason::OverHardCeiling);
         }
-        // Velocity Limit and Daily Cap: ticket #5.
-        if r.amount.0 <= self.policy.auto_limit.0 {
-            Ok(Outcome::Approved)
-        } else {
-            Ok(Outcome::Pending)
-        }
+        Ok(())
     }
 
     fn store(&mut self, r: &SpendRequest) {
@@ -540,6 +576,14 @@ impl Allowance {
     }
 }
 
+fn now_hour() -> u64 {
+    hour_of(env::block_timestamp())
+}
+
+fn limit_detail(s: Shortfall) -> LimitDetail {
+    LimitDetail { used: U128(s.used), limit: U128(s.limit), retry_after_ns: s.retry_after_ns }
+}
+
 fn emit_outcome(r: &SpendRequest) {
     events::emit(
         "spend_request",
@@ -549,6 +593,7 @@ fn emit_outcome(r: &SpendRequest) {
             "amount": r.amount,
             "outcome": r.outcome,
             "blocked_reason": r.blocked_reason,
+            "limit": r.limit,
         }),
     );
 }

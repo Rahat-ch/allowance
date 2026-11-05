@@ -47,11 +47,55 @@ export type TracerSignArgs = {
 };
 
 /**
+ * The parts of an `EXPERIMENTAL_tx_status` / send-transaction response that
+ * `tracerSignStatus` reads. Everything is optional because a response for a
+ * transaction that is not yet executed carries no outcomes.
+ */
+export type TxStatusView = {
+  transaction_outcome?: { id?: string; outcome?: { receipt_ids?: string[] } };
+  receipts_outcome?: { id: string; outcome: { status: unknown } }[];
+};
+
+export type TracerSignStatus = { kind: "pending" } | { kind: "accepted" } | { kind: "failed"; message: string };
+
+/**
+ * Whether `tracer_sign` itself (the transaction's first receipt, executed on
+ * the Allowance) has run, and if it panicked, why. Later receipts (funding,
+ * signing) are tracked through `get_signed_payment` instead.
+ */
+export function tracerSignStatus(tx: TxStatusView): TracerSignStatus {
+  const receiptId = tx.transaction_outcome?.outcome?.receipt_ids?.[0];
+  const receipt = receiptId === undefined ? undefined : tx.receipts_outcome?.find(r => r.id === receiptId);
+  const status = receipt?.outcome.status;
+  if (status === undefined || status === null || typeof status !== "object") return { kind: "pending" };
+  if ("Failure" in status) return { kind: "failed", message: describeFailure(status.Failure) };
+  return { kind: "accepted" };
+}
+
+/** The contract's panic message when there is one, else the raw failure. */
+function describeFailure(failure: unknown): string {
+  const kind = (failure as { ActionError?: { kind?: unknown } } | null)?.ActionError?.kind;
+  const call = (kind as { FunctionCallError?: unknown } | undefined)?.FunctionCallError;
+  if (call && typeof call === "object") {
+    const execution = (call as { ExecutionError?: unknown }).ExecutionError;
+    if (typeof execution === "string") return execution;
+    const panic = (call as { HostError?: { GuestPanic?: { panic_msg?: unknown } } }).HostError?.GuestPanic?.panic_msg;
+    if (typeof panic === "string") return `Smart contract panicked: ${panic}`;
+  }
+  return JSON.stringify(failure);
+}
+
+/**
  * Calls `tracer_sign` as the Allowance itself, i.e. `agent` must be an
  * `Account` for the Allowance id signing with the Agent's function-call key.
- * Returns the transaction hash; signing completes asynchronously.
+ * Returns once the transaction is in a final block, with the transaction hash
+ * and whatever is already known about the `tracer_sign` receipt; signing
+ * completes asynchronously.
  */
-export async function tracerSign(agent: Account, args: TracerSignArgs): Promise<string> {
+export async function tracerSign(
+  agent: Account,
+  args: TracerSignArgs,
+): Promise<{ txHash: string; status: TracerSignStatus }> {
   const outcome = await agent.callFunctionRaw({
     contractId: agent.accountId,
     methodName: "tracer_sign",
@@ -60,5 +104,5 @@ export async function tracerSign(agent: Account, args: TracerSignArgs): Promise<
     deposit: 0n,
     waitUntil: "INCLUDED_FINAL",
   });
-  return outcome.transaction_outcome.id;
+  return { txHash: outcome.transaction_outcome.id, status: tracerSignStatus(outcome as TxStatusView) };
 }

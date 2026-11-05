@@ -3,7 +3,7 @@
  * with a plain `ft_transfer` (the Allowance must be storage-registered; deploy
  * does that).
  */
-import { USDC_TESTNET, loadEnv, requireEnv, txLink } from "./config.js";
+import { USDC_TESTNET, isMain, loadEnv, requireEnv, txLink } from "./config.js";
 import { ONE_YOCTO, TGAS, accountFromCredentials, isUsdcRegistered, usdcBalance } from "./near.js";
 import { formatUsdc, parseUsdc } from "./usdc.js";
 
@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   }
   const before = await usdcBalance(allowanceId);
 
-  const outcome = await accountFromCredentials(ownerId).callFunctionRaw({
+  const outcome = await (await accountFromCredentials(ownerId)).callFunctionRaw({
     contractId: USDC_TESTNET,
     methodName: "ft_transfer",
     args: { receiver_id: allowanceId, amount: amount.toString(), memo: "Allowance funding" },
@@ -37,7 +37,9 @@ async function main(): Promise<void> {
   console.log(`  Allowance USDC: ${formatUsdc(before)} -> ${formatUsdc(after)}`);
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (isMain(import.meta.url)) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}

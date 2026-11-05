@@ -3,9 +3,9 @@
  * and key files in `~/.near-credentials`. Keys are only ever read from or
  * written to the home directory, never to the repo.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import { NEAR_TESTNET_CAIP2, getDefaultAsset } from "@x402/near";
@@ -49,10 +49,65 @@ function asSecretKey(value: string, file: string): KeyPairString {
   return value as KeyPairString;
 }
 
-/** Reads a near-cli style credential file and returns its secret key. */
+/**
+ * `path` with symlinks and `..` resolved. A path that does not exist yet is
+ * resolved through its nearest existing ancestor, so a key about to be
+ * written is judged by where it will really land.
+ */
+function realPath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(realPath(parent), basename(absolute));
+  }
+}
+
+/** True when `path` resolves to somewhere inside this repository. */
+export function isInsideRepo(path: string): boolean {
+  const rel = relative(realPath(REPO_ROOT), realPath(path));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** Throws unless `path` resolves outside the repository; keys must never live in it. */
+export function assertOutsideRepo(path: string, what = "key file"): void {
+  if (isInsideRepo(path)) {
+    throw new Error(`refusing to use a ${what} inside the repo: ${realPath(path)}`);
+  }
+}
+
+/** Creates the credentials directory if needed and keeps it owner-only (0700). */
+export function ensureCredentialsDir(): void {
+  mkdirSync(CREDENTIALS_DIR, { recursive: true, mode: 0o700 });
+  chmodSync(dirname(CREDENTIALS_DIR), 0o700);
+  chmodSync(CREDENTIALS_DIR, 0o700);
+}
+
+/**
+ * Reads a near-cli style credential file and returns its secret key. Refuses
+ * files inside the repo, warns when group or others can read the file, and
+ * never echoes the file's contents in an error.
+ */
 export function readKeyFile(file: string): KeyPairString {
-  const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<CredentialFile>;
-  if (typeof parsed.private_key !== "string") {
+  assertOutsideRepo(file);
+  if (dirname(realPath(file)) === realPath(CREDENTIALS_DIR)) {
+    ensureCredentialsDir();
+  }
+  const mode = statSync(file).mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    console.warn(
+      `warning: ${file} has mode ${mode.toString(8).padStart(4, "0")}, so group or others can access it; run chmod 600 ${file}`,
+    );
+  }
+  let parsed: Partial<CredentialFile>;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<CredentialFile>;
+  } catch {
+    // Deliberately no `cause`: a JSON SyntaxError quotes the text around the error, i.e. the key.
+    throw new Error(`${file}: not a valid JSON credential file`);
+  }
+  if (typeof parsed !== "object" || parsed === null || typeof parsed.private_key !== "string") {
     throw new Error(`${file}: no private_key`);
   }
   return asSecretKey(parsed.private_key, file);
@@ -69,10 +124,8 @@ export function readAccountKey(accountId: string): KeyPairString {
 
 /** Writes a credential file with owner-only permissions. Refuses paths inside the repo. */
 export function writeKeyFile(file: string, contents: CredentialFile): void {
-  if (file.startsWith(REPO_ROOT)) {
-    throw new Error(`refusing to write a key inside the repo: ${file}`);
-  }
-  mkdirSync(CREDENTIALS_DIR, { recursive: true, mode: 0o700 });
+  assertOutsideRepo(file);
+  ensureCredentialsDir();
   writeFileSync(file, JSON.stringify(contents, null, 2) + "\n", { mode: 0o600, flag: "wx" });
 }
 
@@ -86,6 +139,20 @@ export function setEnvValue(name: string, value: string): void {
     : `${current}${current === "" || current.endsWith("\n") ? "" : "\n"}${line}\n`;
   writeFileSync(ENV_FILE, next);
   process.env[name] = value;
+}
+
+/**
+ * True when this module's importer is the script Node was started with, so
+ * scripts run `main` only when executed, not when imported by tests.
+ */
+export function isMain(importMetaUrl: string): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(importMetaUrl));
+  } catch {
+    return false;
+  }
 }
 
 export function txLink(hash: string): string {

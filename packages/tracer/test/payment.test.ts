@@ -13,6 +13,7 @@ import { createFacilitator } from "../src/facilitator.js";
 import { buildPaymentPayload, buildPaymentRequirements } from "../src/payment.js";
 
 const USDC_TESTNET = "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af";
+const USDC_MAINNET = "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1";
 
 type GoldenCase = {
   name: string;
@@ -53,6 +54,17 @@ describe("buildPaymentRequirements", () => {
     expect(
       buildPaymentRequirements({ payTo: "merchant.testnet", amount: max, maxTimeoutSeconds: 60 }).amount,
     ).toBe(max);
+  });
+
+  it("defaults the asset to the network's USDC", () => {
+    expect(
+      buildPaymentRequirements({
+        payTo: "merchant.near",
+        amount: 1n,
+        maxTimeoutSeconds: 60,
+        network: "near:mainnet",
+      }).asset,
+    ).toBe(USDC_MAINNET);
   });
 
   it("uses an explicit asset when given", () => {
@@ -168,13 +180,13 @@ describe("buildPaymentPayload with the official facilitator", () => {
   const relayer = "relayer.testnet";
   const height = 200_000_000n;
 
-  async function signedDelegate(secretKey: KeyPairString): Promise<string> {
+  async function signedDelegate(secretKey: KeyPairString, amount = "10000"): Promise<string> {
     const signer = KeyPairSigner.fromSecretKey(secretKey);
     const delegate = buildDelegateAction({
       senderId: payer,
       receiverId: USDC_TESTNET,
       actions: [
-        actions.functionCall("ft_transfer", { receiver_id: payee, amount: "10000" }, 30_000_000_000_000n, 1n),
+        actions.functionCall("ft_transfer", { receiver_id: payee, amount }, 30_000_000_000_000n, 1n),
       ],
       nonce: height * 1_000_000n - 5n,
       maxBlockHeight: height + 50n,
@@ -193,7 +205,7 @@ describe("buildPaymentPayload with the official facilitator", () => {
         codeHash: accountId === USDC_TESTNET ? "ByteCodeHashOfTheToken1111111111" : "11111111111111111111111111111111",
       }),
       viewAccessKey: async () => ({ nonce: 1n, permissionKind: "FullAccess" }),
-      ftBalanceOf: async () => 1_000_000n,
+      ftBalanceOf: async () => 100_000_000n,
       storageBalanceOf: async () => ({ supported: true, registered: true }),
       submitSignedDelegateAction: async ({ signedDelegateAction }) => {
         submitted.push(signedDelegateAction);
@@ -215,6 +227,19 @@ describe("buildPaymentPayload with the official facilitator", () => {
     const settled = await facilitator.settle(payload, requirements);
     expect(settled).toMatchObject({ success: true, transaction: "TXHASH", network: "near:testnet", payer });
     expect(submitted).toEqual([b64]);
+  });
+
+  it("builds and verifies a payment above the client's default $1 spend cap", async () => {
+    // 5 USDC. The x402 client refuses this by default; the Allowance contract
+    // enforces the Policy, so buildPaymentPayload must not.
+    const amount = "5000000";
+    const b64 = await signedDelegate(KeyPair.fromRandom("ed25519").toString() as KeyPairString, amount);
+    const requirements = buildPaymentRequirements({ payTo: payee, amount, maxTimeoutSeconds: 60 });
+    const payload = await buildPaymentPayload(b64, requirements);
+    expect(payload.accepted.amount).toBe(amount);
+
+    const verified = await createFacilitator(chain([])).verify(payload, requirements);
+    expect(verified).toEqual({ isValid: true, payer });
   });
 
   it("advertises the exact scheme on near:testnet", async () => {

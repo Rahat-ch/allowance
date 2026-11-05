@@ -9,9 +9,9 @@
  */
 import { x402Client } from "@x402/core/client";
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements, ResourceInfo } from "@x402/core/types";
-import { decodeSignedDelegateB64, parseFtTransferArgs, type DecodedSignedDelegate } from "@x402/near";
+import { decodeSignedDelegateB64, getDefaultAsset, parseFtTransferArgs, type DecodedSignedDelegate } from "@x402/near";
 import { ExactNearScheme } from "@x402/near/exact/client";
-import { NETWORK, USDC_TESTNET } from "./config.js";
+import { NETWORK } from "./config.js";
 
 const X402_VERSION = 2;
 const U128_MAX = (1n << 128n) - 1n;
@@ -22,7 +22,7 @@ export type RequirementsInput = {
   /** Token amount in atomic units (USDC has 6 decimals). */
   amount: bigint | string;
   maxTimeoutSeconds: number;
-  /** NEP-141 token contract; defaults to Circle USDC on testnet. */
+  /** NEP-141 token contract; defaults to the network's USDC as the x402 NEAR package lists it. */
   asset?: string;
   network?: Network;
 };
@@ -34,10 +34,11 @@ export function buildPaymentRequirements(input: RequirementsInput): PaymentRequi
   if (!Number.isInteger(input.maxTimeoutSeconds) || input.maxTimeoutSeconds <= 0) {
     throw new Error(`maxTimeoutSeconds must be a positive integer, got ${input.maxTimeoutSeconds}`);
   }
+  const network = input.network ?? NETWORK;
   return {
     scheme: "exact",
-    network: input.network ?? NETWORK,
-    asset: input.asset ?? USDC_TESTNET,
+    network,
+    asset: input.asset ?? getDefaultAsset(network).asset,
     amount: toU128String(input.amount),
     payTo: input.payTo,
     maxTimeoutSeconds: input.maxTimeoutSeconds,

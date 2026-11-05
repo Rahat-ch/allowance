@@ -1,0 +1,10 @@
+{
+  "name": "allowance",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

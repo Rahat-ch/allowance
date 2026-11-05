@@ -4,7 +4,7 @@
  * facilitator against the sandbox.
  */
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { allowanceFetch, getSignedPayment } from "../src/agent.js";
+import { allowanceFetch, getRequest } from "../src/agent.js";
 import { USDC, startHarness, type Harness } from "../src/harness.js";
 import { startSeller, type Seller } from "../src/seller.js";
 
@@ -53,5 +53,5 @@ test("a Signed Payment from the Allowance is verified and settled, and the Payee
   expect(settlement).toMatchObject({ success: true, network: "near:testnet", payer: h.payerAccountId });
   expect(await h.usdcBalance(h.payee.accountId)).toBe(before + USDC / 2n);
   expect(requestIds).toHaveLength(1);
-  expect((await getSignedPayment(h, requestIds[0]!))?.status).toBe("Signed");
+  expect(await getRequest(h, requestIds[0]!)).toMatchObject({ outcome: "Approved", status: "Signed" });
 });

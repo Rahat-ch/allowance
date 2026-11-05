@@ -35,7 +35,29 @@ export type PendingSignature = {
   domain_id: number;
 };
 
+/** The Policy as the contract takes it: amounts are USDC base units as strings. */
+export type Policy = {
+  daily_cap: string;
+  auto_limit: string;
+  hard_ceiling: string;
+  velocity_limit: number;
+  max_timeout_blocks: number;
+};
+
+/** Roomy defaults so tests that aren't about limits never hit one. */
+export const DEFAULT_POLICY: Policy = {
+  daily_cap: (1_000n * USDC).toString(),
+  auto_limit: (100n * USDC).toString(),
+  hard_ceiling: (500n * USDC).toString(),
+  velocity_limit: 1_000,
+  max_timeout_blocks: 600,
+};
+
 export type HarnessOptions = {
+  /** The Allowance's Policy (default: DEFAULT_POLICY). */
+  policy?: Policy;
+  /** Put the Payee on the Allowlist (default true). */
+  allowPayee?: boolean;
   /** Derived keys the Payer Account is created with. */
   payerKeys?: number;
   /** Answer every signature request as soon as it appears. Tests of timeouts turn this off. */
@@ -60,7 +82,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
 }
 
 async function setUp(sandbox: Sandbox, options: HarnessOptions) {
-  const { payerKeys = 2, autoRespond = true, allowanceUsdc = 100n * USDC } = options;
+  const { payerKeys = 2, autoRespond = true, allowanceUsdc = 100n * USDC, policy = DEFAULT_POLICY, allowPayee = true } = options;
   const wasms = options.wasms ?? readContracts();
   const provider = new JsonRpcProvider({ url: sandbox.rpcUrl });
   const secrets = new Map<string, KeyPairString>();
@@ -95,6 +117,7 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     methodName: "new",
     args: { owner_id: owner.accountId, total_supply: (1_000_000n * USDC).toString() },
   });
+  const agentKey = KeyPair.fromRandom("ed25519");
   await allowance.callFunction({
     contractId: allowance.accountId,
     methodName: "new",
@@ -103,8 +126,12 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
       asset_id: usdc.accountId,
       signer_id: signer.accountId,
       domain_id: ED25519_DOMAIN_ID,
+      agent_public_key: agentKey.getPublicKey().toString(),
+      policy,
     },
   });
+  // The Agent: a function-call key on the Allowance account that may only call request_spend.
+  const agent = new Account(allowance.accountId, provider, agentKey.toString() as KeyPairString);
 
   // Keys the mock signer hands out as "derived" from the Allowance. Only the
   // harness holds their secrets, standing in for the MPC network.
@@ -157,6 +184,10 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     const body = (await response.json()) as { result?: T; error?: unknown };
     if (body.error !== undefined) throw new Error(`${method}: ${JSON.stringify(body.error)}`);
     return body.result as T;
+  }
+
+  async function addPayee(accountId: string): Promise<void> {
+    await owner.callFunction({ contractId: allowance.accountId, methodName: "add_payee", args: { payee: accountId } });
   }
 
   async function finalHeight(): Promise<number> {
@@ -266,6 +297,7 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
   if (keys.length !== payerKeys) throw new Error(`Payer Account has ${keys.length} recorded keys, expected ${payerKeys}`);
 
   await Promise.all([registerUsdc(allowance.accountId), registerUsdc(payee.accountId)]);
+  if (allowPayee) await addPayee(payee.accountId);
   if (allowanceUsdc > 0n) await transferUsdc(owner, allowance.accountId, allowanceUsdc);
 
   const facilitator: Facilitator = createFacilitator({
@@ -288,6 +320,9 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     signer,
     owner,
     allowance,
+    agent,
+    policy,
+    addPayee,
     relayer,
     payee,
     payerAccountId,

@@ -22,6 +22,8 @@ const PAYER_ACCOUNT_BALANCE: NearToken = NearToken::from_millinear(100);
 const FT_STORAGE_DEPOSIT: NearToken = NearToken::from_micronear(1_250);
 /// Chain Signatures `sign` needs at least 15 TGas plus room for the yield (docs/notes).
 const SIGN_GAS: Gas = Gas::from_tgas(50);
+/// Largest signer response `on_signed` reads; a real one is ~300 bytes.
+const SIGN_RESPONSE_MAX_BYTES: usize = 2_048;
 
 #[near(serializers = [json, borsh])]
 #[derive(Clone, Debug, PartialEq)]
@@ -325,14 +327,15 @@ impl Allowance {
     pub fn on_signed(
         &mut self,
         request_id: String,
-        #[callback_result] signed: Result<near_sdk::serde_json::Value, PromiseError>,
     ) {
-        // Parse leniently: an unexpected response must end the payment, never revert this
-        // callback and leave it Signing forever.
+        // Read the raw result and parse leniently: an unexpected response (including one that
+        // isn't JSON) must end the payment, never revert this callback and leave it Signing.
+        let signed = env::promise_result_checked(0, SIGN_RESPONSE_MAX_BYTES)
+            .ok()
+            .and_then(|raw| near_sdk::serde_json::from_slice::<near_sdk::serde_json::Value>(&raw).ok());
         let mut p = self.payments.get(&request_id).cloned().expect("unknown request");
         let d = self.delegate_for(&p);
         let sig: Option<[u8; 64]> = signed
-            .ok()
             .and_then(|v| near_sdk::serde_json::from_value::<SignResponse>(v).ok())
             .filter(|r| r.scheme == "Ed25519")
             .and_then(|r| r.signature.try_into().ok())

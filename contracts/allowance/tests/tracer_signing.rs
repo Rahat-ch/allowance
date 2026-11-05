@@ -117,8 +117,8 @@ fn missing_signature_still_counts_as_spent() {
     c.set_payer_keys_for_test(vec![[7u8; 32]]);
     requested(&mut c, "req_0000000000000001");
     funded(&mut c, "req_0000000000000001", 5_000);
-    testing_env!(ctx(ALLOWANCE).build());
-    let _ = c.on_signed("req_0000000000000001".into(), Err(near_sdk::PromiseError::Failed));
+    signer_result(near_sdk::PromiseResult::Failed);
+    c.on_signed("req_0000000000000001".into());
     let p = c.get_signed_payment("req_0000000000000001".into()).unwrap();
     assert_eq!(p.status, PaymentStatus::SignatureUnavailable);
     assert_eq!(p.signed_delegate_action, None);
@@ -156,9 +156,29 @@ fn signed_contract() -> (Allowance, allowance::delegate::FtTransferDelegate) {
     (c, expected_delegate(pk))
 }
 
+/// The signer's result as `on_signed` sees it.
+fn signer_result(result: near_sdk::PromiseResult) {
+    testing_env!(
+        ctx(ALLOWANCE).build(),
+        near_sdk::test_vm_config(),
+        near_sdk::RuntimeFeesConfig::test(),
+        Default::default(),
+        vec![result]
+    );
+}
+
 fn respond(c: &mut Allowance, response: near_sdk::serde_json::Value) {
-    testing_env!(ctx(ALLOWANCE).build());
-    let _ = c.on_signed("req_0000000000000001".into(), Ok(response));
+    signer_result(near_sdk::PromiseResult::Successful(near_sdk::serde_json::to_vec(&response).unwrap()));
+    c.on_signed("req_0000000000000001".into());
+}
+
+#[test]
+fn a_response_that_is_not_json_ends_the_payment_instead_of_leaving_it_signing() {
+    let (mut c, _) = signed_contract();
+    signer_result(near_sdk::PromiseResult::Successful(b"not json".to_vec()));
+    c.on_signed("req_0000000000000001".into());
+    let p = c.get_signed_payment("req_0000000000000001".into()).unwrap();
+    assert_eq!(p.status, PaymentStatus::SignatureUnavailable);
 }
 
 #[test]

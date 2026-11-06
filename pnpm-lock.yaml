@@ -8,6 +8,31 @@ importers:
 
   .: {}
 
+  packages/deploy:
+    dependencies:
+      '@x402/near':
+        specifier: 2.30.0
+        version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
+      dotenv:
+        specifier: 18.0.9
+        version: 18.0.9
+      near-api-js:
+        specifier: 7.4.0
+        version: 7.4.0
+    devDependencies:
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 5.1.0
+        version: 5.1.0(@types/node@24.19.2)(vite@8.3.6(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15))
+
   packages/golden-vectors:
     dependencies:
       '@near-js/crypto':
@@ -41,6 +66,9 @@ importers:
       '@x402/near':
         specifier: 2.30.0
         version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
+      deploy:
+        specifier: workspace:*
+        version: link:../deploy
       near-api-js:
         specifier: 7.4.0
         version: 7.4.0
@@ -82,34 +110,6 @@ importers:
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
-      '@types/node':
-        specifier: 24.19.2
-        version: 24.19.2
-      tsx:
-        specifier: 4.23.15
-        version: 4.23.15
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 5.1.0
-        version: 5.1.0(@types/node@24.19.2)(vite@8.3.6(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15))
-
-  packages/tracer:
-    dependencies:
-      '@x402/core':
-        specifier: 2.30.0
-        version: 2.30.0
-      '@x402/near':
-        specifier: 2.30.0
-        version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
-      dotenv:
-        specifier: 18.0.9
-        version: 18.0.9
-      near-api-js:
-        specifier: 7.4.0
-        version: 7.4.0
-    devDependencies:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2

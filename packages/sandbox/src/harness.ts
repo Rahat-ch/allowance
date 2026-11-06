@@ -136,19 +136,30 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
   // The Agent: a function-call key on the Allowance account that may only call request_spend.
   const agent = new Account(allowance.accountId, provider, agentKey.toString() as KeyPairString);
 
-  // Keys the mock signer hands out as "derived" from the Allowance. Only the
+  // Keys the mock signer hands out as "derived" from an Allowance. Only the
   // harness holds their secrets, standing in for the MPC network.
-  const derivedKeys = Array.from({ length: payerKeys }, () => KeyPair.fromRandom("ed25519"));
   const keyByPath = new Map<string, KeyPair>();
-  for (const [i, key] of derivedKeys.entries()) {
-    const path = `x402/${i}`;
-    keyByPath.set(`${allowance.accountId}|${path}`, key);
-    await root.callFunction({
-      contractId: signer.accountId,
-      methodName: "register_derived_key",
-      args: { predecessor: allowance.accountId, path, public_key: key.getPublicKey().toString() },
-    });
+
+  /**
+   * Registers `count` fresh "derived" keys (paths x402/0..) for `predecessor` with the
+   * mock signer; the responder then signs with them. An Allowance needs these before
+   * `create_payer_account`.
+   */
+  async function registerDerivedKeys(predecessor: string, count: number): Promise<KeyPair[]> {
+    const keys = Array.from({ length: count }, () => KeyPair.fromRandom("ed25519"));
+    for (const [i, key] of keys.entries()) {
+      const path = `x402/${i}`;
+      keyByPath.set(`${predecessor}|${path}`, key);
+      await root.callFunction({
+        contractId: signer.accountId,
+        methodName: "register_derived_key",
+        args: { predecessor, path, public_key: key.getPublicKey().toString() },
+      });
+    }
+    return keys;
   }
+
+  const derivedKeys = await registerDerivedKeys(allowance.accountId, payerKeys);
 
   async function view<T>(contractId: string, method: string, args: Record<string, unknown> = {}): Promise<T> {
     return (await provider.callFunction<SerializedReturnValue>({ contractId, method, args })) as T;
@@ -183,6 +194,18 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
       deposit: 1n,
       gas: 60n * TGAS,
     });
+  }
+
+  /**
+   * A fresh account with `near` NEAR and `usdcAmount` mock USDC (sent by the harness's
+   * Owner), unrelated to the harness's Allowance: e.g. the Owner for the deploy script,
+   * which sets up an Allowance of its own.
+   */
+  async function createFundedAccount(prefix: string, near: bigint, usdcAmount: bigint): Promise<Account> {
+    const account = await createAccount(prefix, near);
+    await registerUsdc(account.accountId);
+    if (usdcAmount > 0n) await transferUsdc(owner, account.accountId, usdcAmount);
+    return account;
   }
 
   async function usdcBalance(accountId: string): Promise<bigint> {
@@ -373,6 +396,8 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     derivedKeys,
     facilitator,
     createAccount,
+    createFundedAccount,
+    registerDerivedKeys,
     view,
     registerUsdc,
     transferUsdc,

@@ -105,6 +105,10 @@ _Avoid_: Payment authorization, voucher, receipt
 The account Signed Payments draw from. Only the Allowance can sign for it; neither the Agent nor the Owner holds its key.
 _Avoid_: Hot wallet, spending account
 
+**Sweep**:
+The Owner bringing USDC back from the Payer Account that Signed Payments left there uncollected, once they have expired. The Allowance signs it like a Signed Payment (back to itself) and anyone can submit it; the returned USDC becomes Withdrawable. Swept Signed Payments still count against the Daily Cap: only the funds come back.
+_Avoid_: Refund, reclaim
+
 **Velocity Limit**:
 The most Spend Requests the Agent may have Approved or Pending in any rolling hour. Blocked requests don't count.
 _Avoid_: Rate limit

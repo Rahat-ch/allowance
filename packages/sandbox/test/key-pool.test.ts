@@ -66,12 +66,17 @@ test("concurrent Signed Payments each lease their own key and all settle", async
 test("with every key leased the next spend is busy, changes nothing, and succeeds once a lease expires", async () => {
   const pool = await getKeyPool(h);
   expect(pool).toMatchObject({ keys: KEYS, free: 0 });
-  const budgetBefore = await getBudget(h);
+  // Everything but the NEAR balance, which the refused call's gas changes.
+  const money = async () => {
+    const { near_balance: _, ...rest } = await getBudget(h);
+    return rest;
+  };
+  const budgetBefore = await money();
   const args = { request_id: newRequestId(), payee: h.payee.accountId, amount: USDC, max_timeout_blocks: 60 };
 
   await expect(requestSpend(h, args)).rejects.toThrow(BUSY);
   expect(await getRequest(h, args.request_id)).toBeNull();
-  expect(await getBudget(h)).toEqual(budgetBefore);
+  expect(await money()).toEqual(budgetBefore);
 
   // Past the earliest payment's max_block_height its key is free again.
   await h.fastForward(pool.next_free_height! - (await h.finalHeight()) + 5);

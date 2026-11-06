@@ -64,6 +64,9 @@ fn allowance() -> Allowance {
     );
     c.set_payer_keys_for_test(vec![payer_signing_key().verifying_key().to_bytes()]);
     c.add_payee(acc(PAYEE));
+    // Plenty of USDC, so funding the Payer Account never runs short.
+    ctx(USDC_ID, 1_000);
+    let _ = c.ft_on_transfer(acc(OWNER), U128(1_000 * USD), String::new());
     c
 }
 
@@ -126,7 +129,8 @@ fn the_owner_sets_up_an_allowance_with_a_policy_the_agent_can_read() {
 
 #[test]
 fn setup_gives_the_agent_a_key_that_can_only_call_request_spend() {
-    let _ = allowance();
+    ctx(OWNER, 1_000);
+    Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, demo_policy(), None);
     let key_actions: Vec<_> = get_created_receipts()
         .into_iter()
         .filter(|r| r.receiver_id == acc(ALLOWANCE))

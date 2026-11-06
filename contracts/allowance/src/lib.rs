@@ -9,13 +9,15 @@ pub mod budget;
 pub mod delegate;
 pub mod events;
 pub mod keys;
+pub mod funds;
 pub mod policy;
 pub mod request;
 pub mod storage;
 
-use budget::{Budget, CapUsage, Shortfall, hour_of};
+use budget::{Budget, Shortfall, hour_of};
 use delegate::FtTransferDelegate;
 use keys::{KeyPool, KeyPoolStatus};
+use funds::{BudgetView, Funds};
 use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_sdk::store::{IterableSet, LookupMap, Vector};
@@ -68,6 +70,8 @@ pub struct Allowance {
     request_ids: Vector<String>,
     /// How many Blocked requests were stored this hour (storage griefing protection).
     blocked_records: BlockedRecords,
+    /// USDC ledger: balance and Held (see `funds`).
+    funds: Funds,
 }
 
 // ---- external interfaces -------------------------------------------------------------
@@ -151,6 +155,7 @@ impl Allowance {
             requests: LookupMap::new(b"r"),
             request_ids: Vector::new(b"i"),
             blocked_records: BlockedRecords::default(),
+            funds: Funds::default(),
         }
     }
 
@@ -164,9 +169,10 @@ impl Allowance {
         self.allowlist.iter().cloned().collect()
     }
 
-    /// Daily Cap and Velocity usage right now, Reservations included.
-    pub fn get_budget(&self) -> CapUsage {
-        self.budget.usage(now_hour(), self.policy.daily_cap.0, self.policy.velocity_limit)
+    /// Daily Cap and Velocity usage right now (Reservations included), the USDC balance,
+    /// Held, Withdrawable and the NEAR balance.
+    pub fn get_budget(&self) -> BudgetView {
+        self.budget_view(self.budget.usage(now_hour(), self.policy.daily_cap.0, self.policy.velocity_limit))
     }
 
     pub fn get_request(&self, request_id: String) -> Option<SpendRequest> {
@@ -298,6 +304,7 @@ impl Allowance {
                 }
                 let hour = now_hour();
                 self.budget.reserve(hour, request.amount.0);
+                self.funds.hold(request.amount.0);
                 request.reserved_hour = Some(hour);
                 request.outcome = outcome;
                 request.status = if outcome == Outcome::Pending { Status::Pending } else { Status::Funding };
@@ -310,6 +317,8 @@ impl Allowance {
         }
         if request.status == Status::Funding {
             self.issue_signed_payment(&request.request_id);
+            // Funding can fail at once (not enough unheld USDC).
+            return self.requests.get(&request.request_id).cloned().expect("stored");
         }
         request
     }
@@ -382,15 +391,8 @@ impl Allowance {
     ) -> PromiseOrValue<()> {
         let mut r = self.requests.get(&request_id).cloned().expect("unknown request");
         if funded.is_err() {
-            // Nothing left the Allowance, so the Reservation is released (Velocity is not).
-            if let Some(hour) = r.reserved_hour.take() {
-                self.budget.release(hour, r.amount.0);
-            }
-            // Nothing was signed with its key.
-            self.keys.release(&request_id);
-            r.status = Status::FundingFailed;
-            events::emit("funding_failed", json!({ "request_id": r.request_id, "amount": r.amount, "payee": r.payee }));
-            self.requests.insert(request_id, r);
+            self.funds.restore(r.amount.0);
+            self.fail_funding(r);
             return PromiseOrValue::Value(());
         }
         // The leased key stays leased until this payment's max_block_height passes.
@@ -572,10 +574,16 @@ impl Allowance {
     }
 
     /// Moves the amount into the Payer Account, then (in `on_payer_funded`) builds and
-    /// signs the delegate. The request must already hold a key (`lease_signing_key`).
-    fn issue_signed_payment(&self, request_id: &str) {
+    /// signs the delegate. The request must already hold a key (`lease_signing_key`) and
+    /// be held (see `funds`); if the USDC can't cover it, it fails funding at once without
+    /// a transfer.
+    fn issue_signed_payment(&mut self, request_id: &str) {
         require!(self.keys.leased_to(request_id).is_some(), "no signing key leased for this request");
-        let r = self.requests.get(request_id).expect("stored");
+        let r = self.requests.get(request_id).cloned().expect("stored");
+        if !self.funds.fund_payer(r.amount.0) {
+            self.fail_funding(r);
+            return;
+        }
         ext_ft::ext(self.asset_id.clone())
             .with_attached_deposit(NearToken::from_yoctonear(1))
             .with_static_gas(Gas::from_tgas(15))
@@ -586,6 +594,19 @@ impl Allowance {
                     .on_payer_funded(request_id.to_string()),
             )
             .detach();
+    }
+
+    /// Nothing left the Allowance, so the Reservation is released (Velocity is not).
+    /// Nothing left the Allowance: releases the Reservation (Velocity is not given back) and
+    /// the signing key, nothing having been signed with it.
+    fn fail_funding(&mut self, mut r: SpendRequest) {
+        if let Some(hour) = r.reserved_hour.take() {
+            self.budget.release(hour, r.amount.0);
+        }
+        self.keys.release(&r.request_id);
+        r.status = Status::FundingFailed;
+        events::emit("funding_failed", json!({ "request_id": r.request_id, "amount": r.amount, "payee": r.payee }));
+        self.requests.insert(r.request_id.clone(), r);
     }
 
     fn delegate_for(&self, r: &SpendRequest, p: &SignedPayment) -> FtTransferDelegate {

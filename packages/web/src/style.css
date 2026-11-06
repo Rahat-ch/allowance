@@ -324,3 +324,105 @@ dialog.confirm li {
   justify-content: flex-end;
   gap: 8px;
 }
+
+h2.section {
+  margin: 8px 0 0;
+  font-size: 1.15rem;
+}
+
+.columns.even {
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 760px) {
+  .columns.even {
+    grid-template-columns: 1fr;
+  }
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px 14px;
+}
+
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.form-grid .span {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.with-unit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.with-unit input {
+  flex: 1;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+
+.inline-form input {
+  flex: 1 1 160px;
+}
+
+ul.payees {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+ul.payees li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+ul.payees li button {
+  margin-left: auto;
+}
+
+.warn-box {
+  background: var(--paused-bg);
+  word-break: break-all;
+}
+
+tr.row-line td {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tag.pending {
+  background: var(--paused-bg);
+  color: var(--warn);
+}
+
+.tag.blocked {
+  background: var(--revoked-bg);
+  color: var(--danger);
+}
+
+.pager {
+  align-items: center;
+  margin-top: 10px;
+}
+
+a {
+  color: var(--accent);
+}

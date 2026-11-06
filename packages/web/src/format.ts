@@ -27,6 +27,20 @@ export function parseUsdc(input: string): bigint | null {
   return BigInt(whole) * USDC_UNIT + BigInt(fraction.padEnd(USDC_DECIMALS, "0"));
 }
 
+/** NEAR typed by a person (`"1"`, `"0.25"`) as yoctoNEAR; null if invalid. */
+export function parseNear(input: string): bigint | null {
+  const match = /^(\d+)(?:\.(\d{0,24}))?$/.exec(input.trim().replaceAll(",", ""));
+  if (!match) return null;
+  const [, whole = "0", fraction = ""] = match;
+  return BigInt(whole) * YOCTO_PER_NEAR + BigInt(fraction.padEnd(24, "0"));
+}
+
+/** USDC base units as a plain number for an input field: `12500000n` → `"12.5"`. */
+export function usdcInput(baseUnits: bigint): string {
+  const fraction = (baseUnits % USDC_UNIT).toString().padStart(USDC_DECIMALS, "0").replace(/0+$/, "");
+  return `${baseUnits / USDC_UNIT}${fraction ? `.${fraction}` : ""}`;
+}
+
 /** yoctoNEAR as NEAR with up to 4 decimals, rounded down: `"2.5 NEAR"`. */
 export function formatNear(yocto: bigint): string {
   const whole = yocto / YOCTO_PER_NEAR;

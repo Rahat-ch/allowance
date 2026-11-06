@@ -105,6 +105,49 @@ fn get_owner_names_the_owner() {
     assert_eq!(c.get_owner(), acc(OWNER));
 }
 
+fn ids(rs: &[SpendRequest]) -> Vec<&str> {
+    rs.iter().map(|r| r.request_id.as_str()).collect()
+}
+
+#[test]
+fn list_requests_pages_newest_first() {
+    let mut c = allowance();
+    spend(&mut c, 0, "req_list_000000001", PAYEE, USD);
+    spend(&mut c, 1, "req_list_000000002", PAYEE, 10 * USD);
+    spend(&mut c, 2, "req_list_000000003", "stranger.testnet", USD); // Blocked, still stored
+    let all = c.list_requests(None, None);
+    assert_eq!(ids(&all), ["req_list_000000003", "req_list_000000002", "req_list_000000001"]);
+    assert_eq!(all[0].blocked_reason, Some(BlockedReason::UnknownPayee));
+    assert_eq!(ids(&c.list_requests(Some(1), Some(1))), ["req_list_000000002"]);
+    assert_eq!(ids(&c.list_requests(Some(2), Some(5))), ["req_list_000000001"]);
+    assert!(c.list_requests(Some(3), None).is_empty());
+    assert!(c.list_requests(Some(99), None).is_empty());
+}
+
+#[test]
+fn list_requests_shows_the_status_as_it_is_now() {
+    let mut c = allowance();
+    spend(&mut c, 0, "req_list_expiring_01", PAYEE, 10 * USD);
+    at(OWNER, 24 * 60 + 1);
+    assert_eq!(c.list_requests(None, None)[0].status, Status::Expired);
+}
+
+#[test]
+fn list_requests_returns_at_most_100() {
+    let mut c = allowance();
+    for i in 0..105u64 {
+        let id = format!("req_list_{i:010}");
+        // Pending, two minutes apart (under the Velocity Limit), rejected to free the Daily Cap.
+        spend(&mut c, 2 * i, &id, PAYEE, 10 * USD);
+        owner(2 * i);
+        c.reject(id);
+    }
+    let page = c.list_requests(None, Some(500));
+    assert_eq!(page.len(), 100);
+    assert_eq!(page[0].request_id, "req_list_0000000104");
+    assert_eq!(c.list_requests(None, None).len(), 20);
+}
+
 // ---- Pause -------------------------------------------------------------------------
 
 #[test]

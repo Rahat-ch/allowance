@@ -203,6 +203,23 @@ impl Allowance {
             .map(|r| SpendRequest { status: approvals::effective_status(r, now), ..r.clone() })
     }
 
+    /// Stored Spend Requests, newest first, as they are now: `from_index` counts back from
+    /// the newest (default 0), `limit` defaults to 20 and is capped at 100. Blocked requests
+    /// beyond the per-hour storage budget aren't stored; only their events record them.
+    pub fn list_requests(&self, from_index: Option<u32>, limit: Option<u32>) -> Vec<SpendRequest> {
+        let now = env::block_timestamp();
+        let len = self.request_ids.len();
+        let skip = from_index.unwrap_or(0).min(len);
+        let take = limit.unwrap_or(20).min(100);
+        (0..len - skip)
+            .rev()
+            .take(take as usize)
+            .filter_map(|i| self.request_ids.get(i))
+            .filter_map(|id| self.requests.get(id))
+            .map(|r| SpendRequest { status: approvals::effective_status(r, now), ..r.clone() })
+            .collect()
+    }
+
     /// The Payer Account: a sub-account only this contract can sign for.
     pub fn payer_account_id(&self) -> AccountId {
         format!("pay.{}", env::current_account_id()).parse().unwrap()

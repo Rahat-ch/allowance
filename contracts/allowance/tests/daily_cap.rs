@@ -55,7 +55,8 @@ fn allowance(velocity_limit: u32) -> Allowance {
         policy,
         None,
     );
-    c.set_payer_keys_for_test(vec![[7u8; 32]]);
+    // Enough Payer Account keys that no test here is ever busy.
+    c.set_payer_keys_for_test((1..=32).map(|i| [i; 32]).collect());
     c.add_payee(acc(PAYEE));
     c
 }
@@ -199,11 +200,13 @@ fn failed_funding_releases_only_that_spends_share_of_its_bucket() {
 #[test]
 fn issuing_moves_the_reservation_to_the_issue_hour() {
     let mut c = allowance(100);
-    let r = spend_at(&mut c, time(0, 0), 20 * USD);
-    // Funded and sent to the signer two hours later (e.g. after a Pickup).
+    let spends: Vec<_> = (0..4).map(|_| spend_at(&mut c, time(0, 0), 5 * USD)).collect();
+    // Funded and sent to the signer two hours later (as after a slow transfer, or a Pickup).
     at(ALLOWANCE, time(2, 0));
-    let _ = c.on_payer_funded(r.request_id.clone(), Ok(()));
-    assert_eq!(c.get_request(r.request_id).unwrap().reserved_hour, Some(H + 2));
+    for r in &spends {
+        let _ = c.on_payer_funded(r.request_id.clone(), Ok(()));
+        assert_eq!(c.get_request(r.request_id.clone()).unwrap().reserved_hour, Some(H + 2));
+    }
     assert_eq!(c.get_budget().used_in_window, U128(20 * USD), "moved, not counted twice");
     // So it is still held when the request hour's bucket would have left the window.
     assert_eq!(spend_at(&mut c, time(25, 30), 1).blocked_reason, Some(BlockedReason::DailyCapExceeded));

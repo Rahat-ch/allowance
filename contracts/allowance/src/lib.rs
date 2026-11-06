@@ -8,12 +8,14 @@
 pub mod budget;
 pub mod delegate;
 pub mod events;
+pub mod keys;
 pub mod policy;
 pub mod request;
 pub mod storage;
 
 use budget::{Budget, CapUsage, Shortfall, hour_of};
 use delegate::FtTransferDelegate;
+use keys::{KeyPool, KeyPoolStatus};
 use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_sdk::store::{IterableSet, LookupMap, Vector};
@@ -55,10 +57,8 @@ pub struct Allowance {
     allowlist: IterableSet<AccountId>,
     paused: bool,
     revoked: bool,
-    /// Ed25519 public keys of the Payer Account, derived for paths `x402/<index>`.
-    payer_keys: Vec<[u8; 32]>,
-    /// Highest delegate nonce used per Payer Account key.
-    last_nonce: Vec<u64>,
+    /// The Payer Account's derived keys (paths `x402/<index>`) and their leases.
+    keys: KeyPool,
     /// True while `create_payer_account` is waiting on its callbacks.
     payer_creating: bool,
     /// Daily Cap Reservations and Velocity counts by hour.
@@ -66,8 +66,6 @@ pub struct Allowance {
     requests: LookupMap<String, SpendRequest>,
     /// Stored Request IDs in submission order, for paging.
     request_ids: Vector<String>,
-    /// Signed Payments issued so far (picks the next Payer Account key).
-    issued_count: u64,
     /// How many Blocked requests were stored this hour (storage griefing protection).
     blocked_records: BlockedRecords,
 }
@@ -147,13 +145,11 @@ impl Allowance {
             allowlist: IterableSet::new(b"a"),
             paused: false,
             revoked: false,
-            payer_keys: Vec::new(),
-            last_nonce: Vec::new(),
+            keys: KeyPool::default(),
             payer_creating: false,
             budget: Budget::new(b"b", b"c"),
             requests: LookupMap::new(b"r"),
             request_ids: Vector::new(b"i"),
-            issued_count: 0,
             blocked_records: BlockedRecords::default(),
         }
     }
@@ -183,7 +179,13 @@ impl Allowance {
     }
 
     pub fn payer_keys(&self) -> Vec<String> {
-        self.payer_keys.iter().map(ed25519_string).collect()
+        self.keys.public_keys().map(ed25519_string).collect()
+    }
+
+    /// How many Payer Account keys a new Signed Payment could lease now, and when the next
+    /// busy one frees.
+    pub fn get_key_pool(&self) -> KeyPoolStatus {
+        self.keys.status(env::block_height())
     }
 
     // ---- Owner ----------------------------------------------------------------------
@@ -199,7 +201,7 @@ impl Allowance {
     /// holding only those keys and registers it with the USDC contract.
     pub fn create_payer_account(&mut self, key_count: u32) -> Promise {
         self.assert_owner();
-        require!(self.payer_keys.is_empty(), "payer account already created");
+        require!(self.keys.is_empty(), "payer account already created");
         require!(!self.payer_creating, "payer account creation already in progress");
         require!((1..=32).contains(&key_count), "key_count must be 1..=32");
         self.payer_creating = true;
@@ -239,6 +241,11 @@ impl Allowance {
     /// Blocked requests are stored only up to a per-hour budget (see `storage`); beyond it
     /// the response and event say `stored: false`, and an identical retry is evaluated
     /// afresh, since nothing was recorded (nothing was paid either).
+    ///
+    /// A request that would be Approved while every Payer Account key is leased to an
+    /// outstanding Signed Payment panics with "busy: ...". The panic reverts the call, so
+    /// nothing is stored, reserved or counted: retry the same Request ID once a key frees
+    /// (`get_key_pool`). `max_timeout_blocks` above the Policy maximum is clamped to it.
     pub fn request_spend(
         &mut self,
         request_id: String,
@@ -285,6 +292,10 @@ impl Allowance {
                 }
             }
             Ok(outcome) => {
+                if outcome == Outcome::Approved {
+                    // Before anything changes, so a busy refusal leaves no trace.
+                    self.lease_signing_key(&request.request_id);
+                }
                 let hour = now_hour();
                 self.budget.reserve(hour, request.amount.0);
                 request.reserved_hour = Some(hour);
@@ -352,10 +363,7 @@ impl Allowance {
             env::log_str("payer account creation failed; keys not recorded");
             return PromiseOrValue::Value(());
         }
-        let keys: Vec<[u8; 32]> =
-            keys.iter().map(|k| try_parse_ed25519(k).expect("bad payer key")).collect();
-        self.last_nonce = vec![0; keys.len()];
-        self.payer_keys = keys;
+        self.keys = KeyPool::new(keys.iter().map(|k| try_parse_ed25519(k).expect("bad payer key")).collect());
         PromiseOrValue::Promise(
             ext_ft::ext(self.asset_id.clone())
                 .with_attached_deposit(FT_STORAGE_DEPOSIT)
@@ -378,24 +386,21 @@ impl Allowance {
             if let Some(hour) = r.reserved_hour.take() {
                 self.budget.release(hour, r.amount.0);
             }
+            // Nothing was signed with its key.
+            self.keys.release(&request_id);
             r.status = Status::FundingFailed;
             events::emit("funding_failed", json!({ "request_id": r.request_id, "amount": r.amount, "payee": r.payee }));
             self.requests.insert(request_id, r);
             return PromiseOrValue::Value(());
         }
-        let k = (self.issued_count % self.payer_keys.len() as u64) as usize;
-        self.issued_count += 1;
-        let height = env::block_height();
-        // The nonce must exceed the key's on-chain nonce (keys start at their creation height
-        // x 1e6) and stay below the facilitator's final height x 1e6, so use the previous
-        // block's range plus a per-key sequence.
-        let nonce = ((height - 1) * 1_000_000).max(self.last_nonce[k] + 1);
-        self.last_nonce[k] = nonce;
+        // The leased key stays leased until this payment's max_block_height passes.
+        let issued = self.keys.issue(&request_id, env::block_height(), r.max_timeout_blocks);
+        let k = issued.key_index;
         let payment = SignedPayment {
-            key_index: k as u32,
-            public_key: ed25519_string(&self.payer_keys[k]),
-            nonce,
-            max_block_height: height + r.max_timeout_blocks,
+            key_index: k,
+            public_key: ed25519_string(&self.keys.public_key(k)),
+            nonce: issued.nonce,
+            max_block_height: issued.max_block_height,
             signed_delegate_action: None,
         };
         let hash = self.delegate_for(&r, &payment).signable_hash();
@@ -413,7 +418,7 @@ impl Allowance {
                 .with_attached_deposit(NearToken::from_yoctonear(1))
                 .with_static_gas(SIGN_GAS)
                 .sign(SignRequest {
-                    path: derivation_path(k as u32),
+                    path: derivation_path(k),
                     payload_v2: SignPayload::Eddsa(hex::encode(hash)),
                     domain_id: self.domain_id,
                 })
@@ -438,7 +443,7 @@ impl Allowance {
         let mut r = self.requests.get(&request_id).cloned().expect("unknown request");
         let mut payment = r.payment.clone().expect("payment built before signing");
         let d = self.delegate_for(&r, &payment);
-        let public_key = self.payer_keys[payment.key_index as usize];
+        let public_key = self.keys.public_key(payment.key_index);
         let sig: Option<[u8; 64]> = signed
             .and_then(|v| near_sdk::serde_json::from_value::<SignResponse>(v).ok())
             .filter(|s| s.scheme == "Ed25519")
@@ -495,7 +500,8 @@ impl Allowance {
             payee,
             amount,
             memo,
-            max_timeout_blocks,
+            // The seller's timeout, clamped: a shorter validity is always acceptable to it.
+            max_timeout_blocks: max_timeout_blocks.min(self.policy.max_timeout_blocks),
             requested_at_ns: env::block_timestamp(),
             outcome: Outcome::Blocked,
             status: Status::Blocked,
@@ -534,8 +540,7 @@ impl Allowance {
             return Err(BlockedReason::Paused);
         }
         let memo_ok = r.memo.as_ref().is_none_or(|m| m.len() <= MAX_MEMO_BYTES);
-        let timeout_ok = (1..=self.policy.max_timeout_blocks).contains(&r.max_timeout_blocks);
-        if r.amount.0 == 0 || !memo_ok || !timeout_ok || self.payer_keys.is_empty() {
+        if r.amount.0 == 0 || !memo_ok || r.max_timeout_blocks == 0 || self.keys.is_empty() {
             return Err(BlockedReason::InvalidRequest);
         }
         if !self.allowlist.contains(&r.payee) {
@@ -552,9 +557,24 @@ impl Allowance {
         self.request_ids.push(r.request_id.clone());
     }
 
+    /// Leases a Payer Account key to `request_id` (or returns the one it holds), or refuses
+    /// the whole call as busy. Every path that issues a Signed Payment (Approved now, or a
+    /// Pickup) calls this before changing any state, so the panic leaves nothing behind.
+    fn lease_signing_key(&mut self, request_id: &str) -> u32 {
+        let height = env::block_height();
+        match self.keys.lease(request_id, height) {
+            Some(k) => k,
+            None => match self.keys.status(height).next_free_height {
+                Some(h) => env::panic_str(&format!("busy: all signing keys are in use, retry from block {h}")),
+                None => env::panic_str("busy: all signing keys are in use, retry shortly"),
+            },
+        }
+    }
+
     /// Moves the amount into the Payer Account, then (in `on_payer_funded`) builds and
-    /// signs the delegate.
+    /// signs the delegate. The request must already hold a key (`lease_signing_key`).
     fn issue_signed_payment(&self, request_id: &str) {
+        require!(self.keys.leased_to(request_id).is_some(), "no signing key leased for this request");
         let r = self.requests.get(request_id).expect("stored");
         ext_ft::ext(self.asset_id.clone())
             .with_attached_deposit(NearToken::from_yoctonear(1))
@@ -577,15 +597,14 @@ impl Allowance {
             nonce: p.nonce,
             max_block_height: p.max_block_height,
             gas: FT_TRANSFER_GAS,
-            public_key: self.payer_keys[p.key_index as usize],
+            public_key: self.keys.public_key(p.key_index),
         }
     }
 
     /// Test-only: seed Payer Account keys without the cross-contract derivation.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_payer_keys_for_test(&mut self, keys: Vec<[u8; 32]>) {
-        self.last_nonce = vec![0; keys.len()];
-        self.payer_keys = keys;
+        self.keys = KeyPool::new(keys);
     }
 }
 

@@ -10,6 +10,7 @@ pub mod delegate;
 pub mod events;
 pub mod policy;
 pub mod request;
+pub mod storage;
 
 use budget::{Budget, CapUsage, Shortfall, hour_of};
 use delegate::FtTransferDelegate;
@@ -21,6 +22,7 @@ use near_sdk::{
     env, ext_contract, near, require,
 };
 use policy::Policy;
+use storage::BlockedRecords;
 use request::{
     BlockedReason, LimitDetail, MAX_MEMO_BYTES, Outcome, SignedPayment, SpendRequest, Status, valid_request_id,
 };
@@ -66,6 +68,8 @@ pub struct Allowance {
     request_ids: Vector<String>,
     /// Signed Payments issued so far (picks the next Payer Account key).
     issued_count: u64,
+    /// How many Blocked requests were stored this hour (storage griefing protection).
+    blocked_records: BlockedRecords,
 }
 
 // ---- external interfaces -------------------------------------------------------------
@@ -150,6 +154,7 @@ impl Allowance {
             requests: LookupMap::new(b"r"),
             request_ids: Vector::new(b"i"),
             issued_count: 0,
+            blocked_records: BlockedRecords::default(),
         }
     }
 
@@ -230,6 +235,10 @@ impl Allowance {
     ///
     /// A malformed Request ID panics instead of being Blocked: there is no valid key to
     /// record it under, and nothing is stored or spent.
+    ///
+    /// Blocked requests are stored only up to a per-hour budget (see `storage`); beyond it
+    /// the response and event say `stored: false`, and an identical retry is evaluated
+    /// afresh, since nothing was recorded (nothing was paid either).
     pub fn request_spend(
         &mut self,
         request_id: String,
@@ -283,8 +292,11 @@ impl Allowance {
                 request.status = if outcome == Outcome::Pending { Status::Pending } else { Status::Funding };
             }
         }
+        request.stored = request.outcome != Outcome::Blocked || self.blocked_records.admit(now_hour());
         emit_outcome(&request);
-        self.store(&request);
+        if request.stored {
+            self.store(&request);
+        }
         if request.status == Status::Funding {
             self.issue_signed_payment(&request.request_id);
         }
@@ -491,6 +503,7 @@ impl Allowance {
             limit: None,
             reserved_hour: None,
             payment: None,
+            stored: false,
         }
     }
 
@@ -594,6 +607,7 @@ fn emit_outcome(r: &SpendRequest) {
             "outcome": r.outcome,
             "blocked_reason": r.blocked_reason,
             "limit": r.limit,
+            "stored": r.stored,
         }),
     );
 }

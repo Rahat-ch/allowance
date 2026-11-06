@@ -14,6 +14,9 @@
 //!   Withdraw only). If spends outrun the balance, the later one fails funding, releases
 //!   its Reservation, and the Owner tops up.
 //!
+//! Sweeps (see `sweep`) bring uncollected USDC back from the Payer Account through
+//! `ft_on_transfer` like any deposit.
+//!
 //! USDC sent with a plain `ft_transfer` (no notify) isn't credited and can't be spent or
 //! withdrawn; always fund with `ft_transfer_call`.
 //!
@@ -120,9 +123,9 @@ pub struct BudgetView {
 impl Allowance {
     /// NEP-141 transfer-and-notify receiver. Credits USDC from the configured asset; any
     /// other token is refused by returning the whole amount as unused, so its contract
-    /// refunds the sender. Anyone may deposit: it only adds funds.
+    /// refunds the sender. Anyone may deposit: it only adds funds. A sweep returning USDC
+    /// from the Payer Account arrives here too and is credited the same way.
     pub fn ft_on_transfer(&mut self, sender_id: AccountId, amount: U128, msg: String) -> PromiseOrValue<U128> {
-        let _ = msg;
         if env::predecessor_account_id() != self.asset_id {
             env::log_str("only the Allowance's asset is accepted; refunding");
             return PromiseOrValue::Value(amount);
@@ -132,6 +135,7 @@ impl Allowance {
             "deposit",
             json!({ "sender_id": sender_id, "amount": amount, "usdc_balance": U128(self.funds.balance()) }),
         );
+        self.sweep_arrived(&sender_id, amount, &msg);
         PromiseOrValue::Value(U128(0))
     }
 

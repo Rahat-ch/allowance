@@ -18,6 +18,7 @@ import { createFacilitator, type Facilitator } from "./facilitator.js";
 export const TGAS = 1_000_000_000_000n;
 export const NEAR = 10n ** 24n;
 export const USDC = 1_000_000n;
+export const HOUR_NS = 3_600_000_000_000n;
 /** Mock USDC uses the same storage deposit as Circle USDC. */
 export const USDC_STORAGE_DEPOSIT = 1_250_000_000_000_000_000_000n;
 /** The x402 network the facilitator and seller speak; the RPC behind it is the sandbox. */
@@ -199,12 +200,41 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     return body.result as T;
   }
 
+  /**
+   * An Owner method on the Allowance, confirmed with 1 yoctoNEAR as a wallet would
+   * (sensitive Owner methods refuse calls without it).
+   */
+  async function ownerCall<T>(method: string, args: Record<string, unknown>, gas = 100n * TGAS): Promise<T> {
+    return (await owner.callFunction({ contractId: allowance.accountId, methodName: method, args, deposit: 1n, gas })) as T;
+  }
+
   async function addPayee(accountId: string): Promise<void> {
-    await owner.callFunction({ contractId: allowance.accountId, methodName: "add_payee", args: { payee: accountId } });
+    await ownerCall("add_payee", { payee: accountId });
   }
 
   async function finalHeight(): Promise<number> {
     return (await provider.viewBlock({ finality: "final" })).header.height;
+  }
+
+  /** The latest final block's timestamp (ns). */
+  async function chainTime(): Promise<bigint> {
+    return BigInt((await provider.viewBlock({ finality: "final" })).header.timestamp_nanosec);
+  }
+
+  /**
+   * Moves the chain clock forward by at least `ns` by fast-forwarding blocks. Slow: the
+   * sandbox advances ~0.3 s of chain time per block, ~110 blocks per wall-clock second,
+   * so an hour takes about two minutes.
+   */
+  async function fastForwardTime(ns: bigint): Promise<void> {
+    const target = (await chainTime()) + ns;
+    for (let i = 0; i < 100; i++) {
+      const left = target - (await chainTime());
+      if (left <= 0n) return;
+      // Assume 0.25 s per block so each step undershoots a little, then top up.
+      await fastForward(Math.min(5_000, Math.max(10, Number(left / 250_000_000n))));
+    }
+    throw new Error("the sandbox clock did not advance");
   }
 
   /** Produces `blocks` blocks at once, e.g. to run out a signature request's yield timeout. */
@@ -336,6 +366,7 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     agent,
     policy,
     addPayee,
+    ownerCall,
     relayer,
     payee,
     payerAccountId,
@@ -349,6 +380,8 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     usdcBalance,
     finalHeight,
     fastForward,
+    fastForwardTime,
+    chainTime,
     pendingSignatures,
     signatureFor,
     respond,

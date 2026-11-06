@@ -45,8 +45,17 @@ pub struct LimitDetail {
 pub enum Status {
     /// Never paid.
     Blocked,
-    /// Waiting for the Owner; holds a Reservation.
+    /// Waiting for the Owner; holds a Reservation. Expires 24 hours after the request.
     Pending,
+    /// The Owner approved it; the Agent has until the Pickup deadline to re-submit the
+    /// Request ID and get its Signed Payment. Holds a Reservation.
+    Approved,
+    /// The Owner rejected it. Its Reservation is released.
+    Rejected,
+    /// Nobody decided within 24 hours. Its Reservation is released.
+    Expired,
+    /// Approved but not picked up in time. Its Reservation is released.
+    Lapsed,
     /// Moving the amount from the Allowance into the Payer Account.
     Funding,
     /// Sent to the signer. Counts as spent from here on, whatever happens (ADR 0003).
@@ -89,6 +98,10 @@ pub struct SpendRequest {
     /// Hour bucket holding this request's Reservation against the Daily Cap; None once
     /// released (or if it never had one).
     pub reserved_hour: Option<u64>,
+    /// When a Pending request Expires (block timestamp, ns).
+    pub expires_at_ns: Option<u64>,
+    /// When an approved request Lapses unless picked up (block timestamp, ns).
+    pub pickup_deadline_ns: Option<u64>,
     pub payment: Option<SignedPayment>,
     /// False for a Blocked request beyond the per-hour storage budget (and for an
     /// IdempotencyConflict): its event is its only record and `get_request` won't find it.

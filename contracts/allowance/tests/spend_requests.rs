@@ -1,6 +1,8 @@
 //! Seam 1 (contract public methods): Spend Requests get Approved or Blocked under the
 //! Policy, Request IDs are idempotent, and Approved spends become Signed Payments.
 
+mod common;
+
 use allowance::Allowance;
 use allowance::policy::Policy;
 use allowance::request::{BlockedReason, Outcome, SpendRequest, Status};
@@ -63,6 +65,7 @@ fn allowance() -> Allowance {
         None,
     );
     c.set_payer_keys_for_test(vec![payer_signing_key().verifying_key().to_bytes()]);
+    common::confirm();
     c.add_payee(acc(PAYEE));
     // Plenty of USDC, so funding the Payer Account never runs short.
     ctx(USDC_ID, 1_000);
@@ -162,6 +165,7 @@ fn a_policy_whose_auto_limit_exceeds_its_hard_ceiling_is_refused() {
 fn only_the_owner_can_add_a_payee() {
     let mut c = allowance();
     ctx(ALLOWANCE, 1_000);
+    common::confirm();
     c.add_payee(acc(ATTACKER));
 }
 
@@ -240,6 +244,7 @@ fn exactly_the_hard_ceiling_is_allowed_with_approval() {
     let policy = Policy { daily_cap: U128(100 * USD), ..demo_policy() };
     let mut c = Allowance::new(acc(OWNER), AGENT_KEY.parse().unwrap(), acc(USDC_ID), acc(SIGNER_ID), 1, policy, None);
     c.set_payer_keys_for_test(vec![[7u8; 32]]);
+    common::confirm();
     c.add_payee(acc(PAYEE));
     assert_eq!(spend(&mut c, ID, PAYEE, 50 * USD).outcome, Outcome::Pending);
 }

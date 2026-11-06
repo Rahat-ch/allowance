@@ -1,6 +1,8 @@
 //! Seam 1 for ticket #5: the Daily Cap is exact over any rolling 24 hours because every
 //! Approved or Pending spend holds a Reservation, and the Velocity Limit is never given back.
 
+mod common;
+
 use allowance::Allowance;
 use allowance::budget::HOUR_NS;
 use allowance::policy::Policy;
@@ -57,6 +59,7 @@ fn allowance(velocity_limit: u32) -> Allowance {
     );
     // Enough Payer Account keys that no test here is ever busy.
     c.set_payer_keys_for_test((1..=32).map(|i| [i; 32]).collect());
+    common::confirm();
     c.add_payee(acc(PAYEE));
     // Plenty of USDC, so only the limits under test refuse anything.
     at("usdc.testnet", time(0, 0));

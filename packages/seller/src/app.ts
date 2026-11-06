@@ -142,7 +142,11 @@ export async function startSeller(options: SellerOptions & { port?: number; host
   return {
     url: `http://${host.includes(":") ? `[${host}]` : host}:${port}`,
     server,
-    close: () => new Promise((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((e) => (e ? reject(e) : resolve()));
+        server.closeAllConnections(); // keep-alive clients would otherwise hold close() open
+      }),
   };
 }
 

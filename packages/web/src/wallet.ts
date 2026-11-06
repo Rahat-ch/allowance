@@ -18,8 +18,11 @@ export type Session = {
   accountId: string;
   /** Where the signatures come from, for display ("MyNearWallet", "sandbox key"). */
   via: string;
-  /** Signs and sends one Owner call to the Allowance; rejects with the failure. */
-  send(call: OwnerCall): Promise<void>;
+  /**
+   * Signs and sends Owner calls, one transaction each and in order (a wallet asks once for
+   * the lot where it can). Rejects with the first failure; later calls aren't sent.
+   */
+  send(...calls: OwnerCall[]): Promise<void>;
   signOut(): Promise<void>;
 };
 
@@ -30,6 +33,10 @@ const SIGN_IN_METHODS = ["pause"];
 
 function toAction(call: OwnerCall) {
   return actionCreators.functionCall(call.methodName, call.args, call.gas, call.deposit);
+}
+
+function receiverOf(call: OwnerCall, allowanceId: string): string {
+  return call.receiverId ?? allowanceId;
 }
 
 /**
@@ -97,10 +104,18 @@ export class Wallets {
     return {
       accountId,
       via: name,
-      send: async (call) => {
-        assertSucceeded(
-          await wallet.signAndSendTransaction({ signerId: accountId, receiverId: this.allowanceId, actions: [toAction(call)] }),
-        );
+      send: async (...calls) => {
+        const [only] = calls;
+        if (calls.length === 1 && only) {
+          assertSucceeded(
+            await wallet.signAndSendTransaction({ signerId: accountId, receiverId: receiverOf(only, this.allowanceId), actions: [toAction(only)] }),
+          );
+          return;
+        }
+        const outcomes = await wallet.signAndSendTransactions({
+          transactions: calls.map((c) => ({ signerId: accountId, receiverId: receiverOf(c, this.allowanceId), actions: [toAction(c)] })),
+        });
+        for (const outcome of outcomes ?? []) assertSucceeded(outcome);
       },
       signOut: () => wallet.signOut(),
     };
@@ -124,8 +139,10 @@ export function sandboxSession(config: Config, accountId: string, secretKey: str
   return {
     accountId,
     via: "sandbox key",
-    send: async (call) => {
-      await account.signAndSendTransaction({ receiverId: config.allowanceId, actions: [toAction(call)] });
+    send: async (...calls) => {
+      for (const c of calls) {
+        await account.signAndSendTransaction({ receiverId: receiverOf(c, config.allowanceId), actions: [toAction(c)] });
+      }
     },
     signOut: async () => {
       try {

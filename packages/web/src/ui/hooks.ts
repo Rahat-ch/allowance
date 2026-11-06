@@ -61,12 +61,15 @@ export function useNow(): number {
   return now;
 }
 
+export type Calls = OwnerCall | OwnerCall[] | (() => Promise<OwnerCall[]>);
+
 export type ActionState = {
   /** Key of the action in flight, e.g. "approve:req_123" or "pause". */
   busy: string | null;
   /** The last failure: what was tried ("Approve $15.00 to payee.near") and why it failed. */
   failure: { label: string; message: string } | null;
-  run: (key: string, label: string, call: OwnerCall) => Promise<boolean>;
+  /** `calls`: one call, several (sent in order), or a lookup that decides them first. */
+  run: (key: string, label: string, calls: Calls) => Promise<boolean>;
   dismiss: () => void;
 };
 
@@ -79,12 +82,13 @@ export function useOwnerActions(session: Session | null, refresh: () => Promise<
   const [failure, setFailure] = useState<ActionState["failure"]>(null);
 
   const run = useCallback(
-    async (key: string, label: string, call: OwnerCall) => {
+    async (key: string, label: string, calls: Calls) => {
       if (!session) return false;
       setBusy(key);
       setFailure(null);
       try {
-        await session.send(call);
+        const list = typeof calls === "function" ? await calls() : Array.isArray(calls) ? calls : [calls];
+        await session.send(...list);
         return true;
       } catch (e) {
         console.error(e);

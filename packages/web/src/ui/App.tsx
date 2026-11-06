@@ -1,12 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { AllowanceViews } from "../allowance.js";
-import { loadConfig, rememberConfig, type Config } from "../config.js";
+import { EXPLORER, loadConfig, rememberConfig, type Config } from "../config.js";
 import { rememberedSandboxSession, Wallets, type Session } from "../wallet.js";
+import { AgentKeyPanel } from "./AgentKeyPanel.js";
+import { AllowlistPanel } from "./AllowlistPanel.js";
 import { BudgetPanel } from "./BudgetPanel.js";
 import { ConfigBar } from "./ConfigBar.js";
 import { ControlPanel } from "./ControlPanel.js";
+import { FundsPanel } from "./FundsPanel.js";
 import { useNow, useOwnerActions, useSnapshot } from "./hooks.js";
 import { PendingList } from "./PendingList.js";
+import { PolicyPanel } from "./PolicyPanel.js";
+import { RecentRequests } from "./RecentRequests.js";
 import { SignIn } from "./SignIn.js";
 import { StatusBanner } from "./StatusBanner.js";
 
@@ -84,7 +89,21 @@ export function App() {
                 <BudgetPanel budget={snapshot.budget} now={now} />
                 <ControlPanel snapshot={snapshot} canAct={canAct} actions={actions} />
               </div>
-              {/* Management (#15) slots in here: Policy, Allowlist, Withdraw, Agent key, recent Spend Requests. */}
+              <h2 className="section">Manage</h2>
+              <div className="columns even">
+                <PolicyPanel policy={snapshot.policy} canAct={canAct} actions={actions} />
+                {views && <AllowlistPanel snapshot={snapshot} views={views} canAct={canAct} actions={actions} />}
+                <FundsPanel snapshot={snapshot} canAct={canAct} actions={actions} />
+                <AgentKeyPanel snapshot={snapshot} canAct={canAct} actions={actions} />
+              </div>
+              {views && (
+                <RecentRequests
+                  views={views}
+                  explorerUrl={EXPLORER[config.network] ? `${EXPLORER[config.network]}/address/${config.allowanceId}` : null}
+                  refreshKey={snapshot}
+                  now={now}
+                />
+              )}
             </>
           )}
           {!snapshot && !error && <p className="muted">Loading {config.allowanceId}…</p>}

@@ -169,6 +169,12 @@ impl Allowance {
 
     // ---- views ----------------------------------------------------------------------
 
+    /// The Owner's account, so a web page can tell whether the signed-in wallet controls this
+    /// Allowance.
+    pub fn get_owner(&self) -> AccountId {
+        self.owner_id.clone()
+    }
+
     pub fn get_policy(&self) -> Policy {
         self.policy.clone()
     }

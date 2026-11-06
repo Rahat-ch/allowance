@@ -8,7 +8,11 @@
  * `contracts/allowance/tests` compare their bytes to this fixture, so the
  * fixture must never be produced by the Rust code itself.
  *
- * Run `pnpm --filter golden-vectors generate` to rewrite the fixture; commit it.
+ * Two fixtures: `delegate-vectors.json` (Signed Payments: one `ft_transfer`) and
+ * `ft-transfer-call-vectors.json` (sweeps: one `ft_transfer_call` back to the
+ * Allowance).
+ *
+ * Run `pnpm --filter golden-vectors generate` to rewrite the fixtures; commit them.
  */
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -110,6 +114,61 @@ const CASES: CaseInput[] = [
   },
 ];
 
+/** A sweep: `ft_transfer_call` from the Payer Account back to the Allowance. */
+type TransferCallCaseInput = Omit<CaseInput, "payee"> & { receiverId: string; msg: string };
+
+const TRANSFER_CALL_CASES: TransferCallCaseInput[] = [
+  {
+    name: "sweep_back_to_allowance_60_tgas",
+    senderId: "pay.allowance.testnet",
+    tokenId: "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af",
+    receiverId: "allowance.testnet",
+    amount: 4_500_000n,
+    msg: "sweep:0",
+    nonce: 200_000_000_000_001n,
+    maxBlockHeight: 200_000_300n,
+    gas: 60n * TGAS,
+    publicKeyHex: KEY_A,
+  },
+  {
+    name: "empty_msg_minimal_values",
+    senderId: "a.near",
+    tokenId: "usdc.near",
+    receiverId: "b.near",
+    amount: 1n,
+    msg: "",
+    nonce: 1n,
+    maxBlockHeight: 1n,
+    gas: 1n * TGAS,
+    publicKeyHex: KEY_B,
+  },
+  {
+    name: "u128_amount_u64_max_fields_long_msg",
+    senderId: "pay.allowance-owner.testnet",
+    tokenId: "usdc.fakes.testnet",
+    receiverId: "allowance-owner.testnet",
+    amount: U128_MAX,
+    msg: "sweep:18446744073709551615",
+    nonce: U64_MAX,
+    maxBlockHeight: U64_MAX,
+    gas: U64_MAX,
+    publicKeyHex: KEY_C,
+  },
+  {
+    name: "msg_needing_json_escapes",
+    senderId: "pay.allowance.near",
+    tokenId: "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+    receiverId: "allowance.near",
+    amount: 120_000_500n,
+    // Quote, backslash, newline, tab, a control character and non-ASCII: JSON.stringify's escapes.
+    msg: 'a "quoted" \\ path\n\twith \u0001 and café ✓',
+    nonce: 187_000_000_000_001n,
+    maxBlockHeight: 187_000_120n,
+    gas: 100n * TGAS,
+    publicKeyHex: KEY_A,
+  },
+];
+
 function hexToBytes(hex: string): Uint8Array {
   return new Uint8Array(Buffer.from(hex, "hex"));
 }
@@ -119,7 +178,6 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 function buildCase(c: CaseInput) {
-  const publicKey = new PublicKey({ keyType: KeyType.ED25519, data: hexToBytes(c.publicKeyHex) });
   // Same call shape as the x402 NEAR client: a plain object literal, so the
   // JSON key order is the literal's insertion order (receiver_id, amount).
   const transfer = actionCreators.functionCall(
@@ -128,10 +186,41 @@ function buildCase(c: CaseInput) {
     c.gas,
     ONE_YOCTO,
   );
+  return {
+    name: c.name,
+    input: { sender_id: c.senderId, token_id: c.tokenId, payee: c.payee, ...commonInput(c) },
+    expected: { ft_transfer_args_utf8: new TextDecoder().decode(transfer.functionCall!.args), ...encode(c, transfer) },
+  };
+}
+
+function buildTransferCallCase(c: TransferCallCaseInput) {
+  // Key order receiver_id, amount, msg: the order the contract writes.
+  const transferCall = actionCreators.functionCall(
+    "ft_transfer_call",
+    { receiver_id: c.receiverId, amount: c.amount.toString(), msg: c.msg },
+    c.gas,
+    ONE_YOCTO,
+  );
+  return {
+    name: c.name,
+    input: { sender_id: c.senderId, token_id: c.tokenId, receiver_id: c.receiverId, msg: c.msg, ...commonInput(c) },
+    expected: {
+      ft_transfer_call_args_utf8: new TextDecoder().decode(transferCall.functionCall!.args),
+      ...encode(c, transferCall),
+    },
+  };
+}
+
+/**
+ * Encodes a one-action delegate from `c.senderId` to `c.tokenId` with the reference
+ * encoder: every expected value except the args.
+ */
+function encode(c: Omit<CaseInput, "payee" | "name">, action: ReturnType<typeof actionCreators.functionCall>) {
+  const publicKey = new PublicKey({ keyType: KeyType.ED25519, data: hexToBytes(c.publicKeyHex) });
   const delegateAction = buildDelegateAction({
     senderId: c.senderId,
     receiverId: c.tokenId,
-    actions: [transfer],
+    actions: [action],
     nonce: c.nonce,
     maxBlockHeight: c.maxBlockHeight,
     publicKey,
@@ -146,39 +235,44 @@ function buildCase(c: CaseInput) {
     signature: new Signature({ keyType: KeyType.ED25519, data: hexToBytes(TEST_SIGNATURE_HEX) }),
   });
   const signedBytes = encodeSignedDelegate(signedDelegate);
-  const args = transfer.functionCall!.args;
 
   return {
-    name: c.name,
-    input: {
-      sender_id: c.senderId,
-      token_id: c.tokenId,
-      payee: c.payee,
-      amount: c.amount.toString(),
-      nonce: c.nonce.toString(),
-      max_block_height: c.maxBlockHeight.toString(),
-      gas: c.gas.toString(),
-      public_key_hex: c.publicKeyHex,
-      signature_hex: TEST_SIGNATURE_HEX,
-    },
-    expected: {
-      ft_transfer_args_utf8: new TextDecoder().decode(args),
-      delegate_action_hex: bytesToHex(delegateActionBytes),
-      signable_message_hex: bytesToHex(signableMessage),
-      signable_message_sha256_hex: bytesToHex(sha256(signableMessage)),
-      signed_delegate_action_hex: bytesToHex(signedBytes),
-      signed_delegate_action_base64: Buffer.from(signedBytes).toString("base64"),
-    },
+    delegate_action_hex: bytesToHex(delegateActionBytes),
+    signable_message_hex: bytesToHex(signableMessage),
+    signable_message_sha256_hex: bytesToHex(sha256(signableMessage)),
+    signed_delegate_action_hex: bytesToHex(signedBytes),
+    signed_delegate_action_base64: Buffer.from(signedBytes).toString("base64"),
   };
 }
 
-const fixture = {
+/** The input fields every case shares, after the case-specific ones. */
+function commonInput(c: Omit<CaseInput, "payee" | "name">) {
+  return {
+    amount: c.amount.toString(),
+    nonce: c.nonce.toString(),
+    max_block_height: c.maxBlockHeight.toString(),
+    gas: c.gas.toString(),
+    public_key_hex: c.publicKeyHex,
+    signature_hex: TEST_SIGNATURE_HEX,
+  };
+}
+
+function writeFixture(file: string, fixture: { description: string; encoder: string; cases: unknown[] }): void {
+  const out = fileURLToPath(new URL(`../fixtures/${file}`, import.meta.url));
+  writeFileSync(out, JSON.stringify(fixture, null, 2) + "\n");
+  console.log(`wrote ${fixture.cases.length} cases to ${out}`);
+}
+
+writeFixture("delegate-vectors.json", {
   description:
     "NEP-366 ft_transfer delegate golden vectors from @near-js/transactions. u64/u128 values are decimal strings. Generated by packages/golden-vectors; do not edit by hand.",
   encoder: "@near-js/transactions@2.5.1",
   cases: CASES.map(buildCase),
-};
+});
 
-const out = fileURLToPath(new URL("../fixtures/delegate-vectors.json", import.meta.url));
-writeFileSync(out, JSON.stringify(fixture, null, 2) + "\n");
-console.log(`wrote ${fixture.cases.length} cases to ${out}`);
+writeFixture("ft-transfer-call-vectors.json", {
+  description:
+    "NEP-366 ft_transfer_call delegate golden vectors (sweeps) from @near-js/transactions. u64/u128 values are decimal strings. Generated by packages/golden-vectors; do not edit by hand.",
+  encoder: "@near-js/transactions@2.5.1",
+  cases: TRANSFER_CALL_CASES.map(buildTransferCallCase),
+});

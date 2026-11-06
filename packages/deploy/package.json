@@ -7,15 +7,18 @@
     "node": ">=24"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./sweep": "./src/sweep.ts"
   },
   "scripts": {
     "allowance": "tsx src/main.ts",
+    "sweep": "tsx src/sweep.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@x402/near": "2.30.0",
+    "borsh": "2.0.0",
     "dotenv": "18.0.9",
     "near-api-js": "7.4.0"
   },

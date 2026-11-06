@@ -13,6 +13,9 @@ importers:
       '@x402/near':
         specifier: 2.30.0
         version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
+      borsh:
+        specifier: 2.0.0
+        version: 2.0.0
       dotenv:
         specifier: 18.0.9
         version: 18.0.9

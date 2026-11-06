@@ -13,6 +13,10 @@
 //!
 //! A key is free again once the chain is past its payment's `max_block_height`, because
 //! NEAR refuses a delegate whose `max_block_height` is below the current block.
+//!
+//! Sweeps (see `sweep`) lease keys the same way, under the holder id `sweep:<id>`, so a
+//! sweep only ever signs with a key whose Signed Payment has expired, and its higher nonce
+//! also invalidates any older delegate on that key.
 
 use near_sdk::near;
 
@@ -24,6 +28,17 @@ struct PayerKey {
     /// Highest delegate nonce issued with this key, across all its leases.
     last_nonce: u64,
     lease: Option<Lease>,
+    /// Delegates issued with this key that may still move money: until
+    /// `SETTLEMENT_SLACK_BLOCKS` past their `max_block_height`. Kept apart from the lease,
+    /// which the next holder overwrites as soon as the key is free.
+    recent: Vec<IssuedTo>,
+}
+
+#[near(serializers = [borsh])]
+#[derive(Clone, Debug)]
+struct IssuedTo {
+    holder: String,
+    max_block_height: u64,
 }
 
 #[near(serializers = [borsh])]
@@ -46,6 +61,12 @@ pub const FUNDING_LEASE_BLOCKS: u64 = 1_000;
 /// the facilitator's `nonce < final_height x 1e6` and `max_block_height - final_height <=
 /// maxTimeoutSeconds` checks hold even if it verifies before the issuing block is final.
 pub const FINALITY_SLACK_BLOCKS: u64 = 2;
+
+/// Blocks past a delegate's `max_block_height` during which the transfer it started may
+/// still be in flight: NEAR checks `max_block_height` when the Delegate action executes,
+/// and the token transfer it emits runs a block or more later (cross-shard). A sweep keeps
+/// deducting such a delegate's amount until then.
+pub const SETTLEMENT_SLACK_BLOCKS: u64 = 40;
 
 impl PayerKey {
     fn is_free(&self, height: u64) -> bool {
@@ -87,7 +108,7 @@ pub struct KeyPool {
 impl KeyPool {
     pub fn new(public_keys: Vec<[u8; 32]>) -> Self {
         Self {
-            keys: public_keys.into_iter().map(|public_key| PayerKey { public_key, last_nonce: 0, lease: None }).collect(),
+            keys: public_keys.into_iter().map(|public_key| PayerKey { public_key, last_nonce: 0, lease: None, recent: Vec::new() }).collect(),
         }
     }
 
@@ -148,7 +169,29 @@ impl KeyPool {
         let max_block_height = height + timeout_blocks.saturating_sub(FINALITY_SLACK_BLOCKS).max(1);
         key.last_nonce = nonce;
         key.lease = Some(Lease { request_id: request_id.to_string(), until: Some(max_block_height), funding_deadline: 0 });
+        key.recent.retain(|r| r.holder != request_id && height <= r.max_block_height.saturating_add(SETTLEMENT_SLACK_BLOCKS));
+        key.recent.push(IssuedTo { holder: request_id.to_string(), max_block_height });
         Issued { key_index: k, nonce, max_block_height }
+    }
+
+    /// Who may still move money out of the Payer Account at `height`, each once: leases
+    /// still funding (their amount is on its way in), and every delegate issued until
+    /// `SETTLEMENT_SLACK_BLOCKS` past its `max_block_height`, even if its key has been
+    /// leased again since.
+    pub fn live_holders(&self, height: u64) -> impl Iterator<Item = &str> {
+        self.keys.iter().flat_map(move |k| {
+            let funding = k
+                .lease
+                .as_ref()
+                .filter(|l| l.until.is_none() && height <= l.funding_deadline)
+                .map(|l| l.request_id.as_str());
+            let issued = k
+                .recent
+                .iter()
+                .filter(move |r| height <= r.max_block_height.saturating_add(SETTLEMENT_SLACK_BLOCKS))
+                .map(|r| r.holder.as_str());
+            funding.into_iter().chain(issued)
+        })
     }
 
     pub fn status(&self, height: u64) -> KeyPoolStatus {

@@ -15,6 +15,7 @@ pub mod funds;
 pub mod policy;
 pub mod request;
 pub mod storage;
+pub mod sweep;
 
 use budget::{Budget, Shortfall, hour_of};
 use delegate::FtTransferDelegate;
@@ -78,6 +79,8 @@ pub struct Allowance {
     blocked_records: BlockedRecords,
     /// USDC ledger: balance and Held (see `funds`).
     funds: Funds,
+    /// Sweeps of uncollected USDC from the Payer Account, by id (see `sweep`).
+    sweeps: Vector<sweep::Sweep>,
 }
 
 // ---- external interfaces -------------------------------------------------------------
@@ -117,6 +120,7 @@ trait ChainSignatures {
 trait FungibleToken {
     fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>);
     fn storage_deposit(&mut self, account_id: AccountId, registration_only: bool);
+    fn ft_balance_of(&self, account_id: AccountId) -> U128;
 }
 
 // ---- contract ------------------------------------------------------------------------
@@ -164,6 +168,7 @@ impl Allowance {
             request_ids: Vector::new(b"i"),
             blocked_records: BlockedRecords::default(),
             funds: Funds::default(),
+            sweeps: Vector::new(b"s"),
         }
     }
 

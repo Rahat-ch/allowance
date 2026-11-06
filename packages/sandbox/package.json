@@ -6,6 +6,11 @@
   "engines": {
     "node": ">=24"
   },
+  "exports": {
+    "./harness": "./src/harness.ts",
+    "./agent": "./src/agent.ts",
+    "./contracts": "./src/contracts.ts"
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

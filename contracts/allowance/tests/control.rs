@@ -97,6 +97,14 @@ fn status(c: &Allowance, id: &str) -> Status {
     c.get_request(id.into()).unwrap().status
 }
 
+// ---- Views -------------------------------------------------------------------------
+
+#[test]
+fn get_owner_names_the_owner() {
+    let c = allowance();
+    assert_eq!(c.get_owner(), acc(OWNER));
+}
+
 // ---- Pause -------------------------------------------------------------------------
 
 #[test]

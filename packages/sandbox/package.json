@@ -11,9 +11,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@x402/core": "2.30.0",
-    "@x402/fetch": "2.30.0",
     "@x402/near": "2.30.0",
+    "allowance-mcp": "workspace:*",
     "near-api-js": "7.4.0",
     "deploy": "workspace:*",
     "near-sandbox": "0.3.5",

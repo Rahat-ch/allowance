@@ -173,6 +173,12 @@ impl Allowance {
         self.policy.clone()
     }
 
+    /// The USDC (NEP-141) contract this Allowance is denominated in, fixed at initialization.
+    /// Agents match it against an x402 offer's `asset` before asking to pay.
+    pub fn get_asset(&self) -> AccountId {
+        self.asset_id.clone()
+    }
+
     pub fn get_allowlist(&self) -> Vec<AccountId> {
         self.allowlist.iter().cloned().collect()
     }

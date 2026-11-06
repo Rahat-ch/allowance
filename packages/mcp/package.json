@@ -1,0 +1,31 @@
+{
+  "name": "allowance-mcp",
+  "private": true,
+  "type": "module",
+  "description": "MCP server for the Agent: pays x402 sellers through the Allowance, holding only the Agent's function-call key.",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@x402/core": "2.30.0",
+    "@x402/fetch": "2.30.0",
+    "@x402/near": "2.30.0",
+    "near-api-js": "7.4.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

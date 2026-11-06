@@ -3,7 +3,7 @@
  * NEAR through storage. Only a per-hour budget of them is stored; the rest are events.
  */
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { requestSpend, type SpendRequest } from "../src/agent.js";
+import { newRequestId, requestSpend, type SpendRequest } from "../src/agent.js";
 import { NEAR, TGAS, USDC, startHarness, type Harness } from "../src/harness.js";
 
 /** Mirrors BLOCKED_RECORDS_PER_HOUR in contracts/allowance/src/storage.rs. */
@@ -86,8 +86,19 @@ test("a flood of Blocked requests stores only the hourly budget and the Owner ca
   // Most of the little NEAR is left: the budget's storage plus the Agent's gas.
   expect(after.free).toBeGreaterThan(FREE_NEAR / 2n);
 
-  // The Owner still acts. (approve, Withdraw, Pause and Revoke land with #7 and #8;
-  // add_payee is the Owner method that grows storage today.)
+  // The Owner can still do everything: add a Payee, approve, Withdraw, Pause and Revoke.
   await h.addPayee(attacker);
   expect(await h.view<string[]>(h.allowance.accountId, "get_allowlist")).toContain(attacker);
+  await h.ownerCall("withdraw", { amount: "1" });
+  const big = await requestSpend(h, {
+    request_id: newRequestId(),
+    payee: h.payee.accountId,
+    amount: BigInt(h.policy.auto_limit) + 1n,
+    max_timeout_blocks: 60,
+  });
+  expect(big.status).toBe("Pending");
+  expect((await h.ownerCall<{ status: string }>("approve", { request_id: big.request_id })).status).toBe("Approved");
+  await h.owner.callFunction({ contractId: h.allowance.accountId, methodName: "pause", args: {} });
+  await h.ownerCall("revoke", {});
+  expect(await h.view(h.allowance.accountId, "is_revoked")).toBe(true);
 });

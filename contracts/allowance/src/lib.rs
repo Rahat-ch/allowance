@@ -7,6 +7,7 @@
 
 pub mod approvals;
 pub mod budget;
+pub mod control;
 pub mod delegate;
 pub mod events;
 pub mod keys;
@@ -45,7 +46,7 @@ const ON_SIGNED_GAS: Gas = Gas::from_tgas(30);
 /// Largest signer response `on_signed` reads; a real one is ~300 bytes.
 const SIGN_RESPONSE_MAX_BYTES: usize = 2_048;
 /// Default NEAR the Agent's function-call key may spend on gas before the Owner replaces it.
-const DEFAULT_AGENT_ALLOWANCE: NearToken = NearToken::from_near(1);
+pub(crate) const DEFAULT_AGENT_ALLOWANCE: NearToken = NearToken::from_near(1);
 /// The only method the Agent's key may call.
 pub const AGENT_METHOD: &str = "request_spend";
 
@@ -60,6 +61,8 @@ pub struct Allowance {
     allowlist: IterableSet<AccountId>,
     paused: bool,
     revoked: bool,
+    /// The Agent's function-call key on this account (deleted on Revoke).
+    agent_key: PublicKey,
     /// The Payer Account's derived keys (paths `x402/<index>`) and their leases.
     keys: KeyPool,
     /// True while `create_payer_account` is waiting on its callbacks.
@@ -137,7 +140,7 @@ impl Allowance {
         let agent_allowance = agent_allowance.unwrap_or(DEFAULT_AGENT_ALLOWANCE);
         Promise::new(env::current_account_id())
             .add_access_key_allowance(
-                agent_public_key,
+                agent_public_key.clone(),
                 near_sdk::Allowance::limited(agent_allowance).expect("agent_allowance must be positive"),
                 env::current_account_id(),
                 AGENT_METHOD,
@@ -152,6 +155,7 @@ impl Allowance {
             allowlist: IterableSet::new(b"a"),
             paused: false,
             revoked: false,
+            agent_key: agent_public_key.clone(),
             keys: KeyPool::default(),
             payer_creating: false,
             budget: Budget::new(b"b", b"c"),

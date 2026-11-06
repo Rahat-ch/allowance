@@ -1,0 +1,106 @@
+{
+  "network": "testnet",
+  "ran_at": "2026-11-06T00:53:11.002Z",
+  "allowance": "alw2.allowance-owner-yinu9f.testnet",
+  "payer_account": "pay.alw2.allowance-owner-yinu9f.testnet",
+  "owner": "allowance-owner-yinu9f.testnet",
+  "payee": "allowance-payee-yinu9f.testnet",
+  "facilitator_relayer": "allowance-relayer-yinu9f.testnet",
+  "signer": "v1.signer-prod.testnet",
+  "usdc": "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af",
+  "policy": {
+    "daily_cap_usd": "3.00",
+    "auto_limit_usd": "0.50",
+    "hard_ceiling_usd": "2.00",
+    "velocity_limit": 10
+  },
+  "deploy": [
+    {
+      "label": "create + deploy + initialize the Allowance (one transaction; it never has a full-access key)",
+      "hash": "2E2wBBh4PXmPvLodHMbvc2G4HEenZzVoiWQCNgSM5UrS"
+    },
+    {
+      "label": "create the Payer Account with keys derived through Chain Signatures",
+      "hash": "JApUiBet2pdJ6oWEjNSPizgPaMywtnS4CUsmfYGPc5Y3"
+    },
+    {
+      "label": "register the Allowance's USDC storage",
+      "hash": "7gdiRYdaJwk4fb8aczpyBMR29A8rgVUgGzFp1cKMWVZh"
+    },
+    {
+      "label": "add the demo seller as a Payee (1 yoctoNEAR)",
+      "hash": "8ktvtebR4HaZuSo8M2DGpvFDjdUhz6DQzC9GvhEkCvtd"
+    },
+    {
+      "label": "fund 3 USDC (ft_transfer_call)",
+      "hash": "ATyGFQciPNjvqehygiEr1wTV1Z2tAYKJW8WiPXqaFaX5"
+    }
+  ],
+  "steps": [
+    {
+      "title": "1. Approved: a $0.10 call is paid",
+      "request_id": "req_61de78139c155128b09e2009",
+      "outcome": "Approved",
+      "status": "Signed",
+      "checks": [
+        "the seller answered 200 after verifying and settling the Signed Payment",
+        "settled by the facilitator, payer = the Payer Account",
+        "the Payee's USDC rose by exactly $0.10"
+      ],
+      "transactions": [
+        {
+          "label": "Spend Request (request_spend, Agent key)",
+          "hash": "9gRqQu6KdmmiFEUKKzbMs3zEjUw5BVp5iKmfMT8ZbqmJ"
+        },
+        {
+          "label": "x402 settlement (relayed by the facilitator)",
+          "hash": "FLA2U9eLZuABsKzTaZrbGy6JkH7Ebz9xbNPAgFiNDrs6"
+        }
+      ]
+    },
+    {
+      "title": "2. Blocked: an injected payment to an unknown Payee",
+      "request_id": "req_223f471cd3b981e53f18a910",
+      "outcome": "Blocked",
+      "status": "Blocked",
+      "blocked_reason": "UnknownPayee",
+      "checks": [
+        "Blocked with reason UnknownPayee (attacker-not-allowed.testnet is not on the Allowlist)",
+        "no Signed Payment was built, so nothing reached the signer",
+        "the Allowance's USDC is unchanged",
+        "nothing moved into the Payer Account"
+      ],
+      "transactions": [
+        {
+          "label": "Spend Request (request_spend, Agent key)",
+          "hash": "FZsLoTFsAinCxp8vCuakjY8oNiJv4PD7jKR5TSxgcH9H"
+        }
+      ]
+    },
+    {
+      "title": "3. Pending, approved by the Owner, picked up by the Agent and paid",
+      "request_id": "req_8fb0c8b215e0fcf2b9824eaa",
+      "outcome": "Pending",
+      "status": "Signed",
+      "checks": [
+        "the $1.00 report is above the Auto Limit and waited for the Owner",
+        "after the Owner's approval, allowance_resume picked up the Signed Payment and the seller answered 200",
+        "the Payee's USDC rose by exactly $1.00"
+      ],
+      "transactions": [
+        {
+          "label": "Spend Request (Pending)",
+          "hash": "3mpx6vkuzuSQmiDpjrYakX8qgrqAW3dDgSQg9tkRXNFE"
+        },
+        {
+          "label": "Owner approval (Owner key, 1 yoctoNEAR attached)",
+          "hash": "BsAYYvceAW1PKo4E9fxB91aKwf3cz4gQ6soUkFcM4kLp"
+        },
+        {
+          "label": "x402 settlement (relayed by the facilitator)",
+          "hash": "GED7HdtFhZVT533MqbedMj3qbCPBBiGRwAL4MTRCrHoh"
+        }
+      ]
+    }
+  ]
+}

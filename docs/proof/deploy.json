@@ -1,0 +1,7 @@
+[
+  { "label": "create + deploy + initialize the Allowance (one transaction; it never has a full-access key)", "hash": "2E2wBBh4PXmPvLodHMbvc2G4HEenZzVoiWQCNgSM5UrS" },
+  { "label": "create the Payer Account with keys derived through Chain Signatures", "hash": "JApUiBet2pdJ6oWEjNSPizgPaMywtnS4CUsmfYGPc5Y3" },
+  { "label": "register the Allowance's USDC storage", "hash": "7gdiRYdaJwk4fb8aczpyBMR29A8rgVUgGzFp1cKMWVZh" },
+  { "label": "add the demo seller as a Payee (1 yoctoNEAR)", "hash": "8ktvtebR4HaZuSo8M2DGpvFDjdUhz6DQzC9GvhEkCvtd" },
+  { "label": "fund 3 USDC (ft_transfer_call)", "hash": "ATyGFQciPNjvqehygiEr1wTV1Z2tAYKJW8WiPXqaFaX5" }
+]

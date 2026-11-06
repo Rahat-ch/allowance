@@ -1,0 +1,30 @@
+{
+  "name": "proof",
+  "private": true,
+  "type": "module",
+  "description": "Testnet proof run (ticket #16): a locked Allowance pays the demo seller through the MCP tools, settled by an unmodified official facilitator.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "testnet": "tsx src/run.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "render": "tsx src/render.ts"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@x402/core": "2.30.0",
+    "@x402/near": "2.30.0",
+    "allowance-mcp": "workspace:*",
+    "dotenv": "18.0.9",
+    "near-api-js": "7.4.0",
+    "seller": "workspace:*"
+  }
+}

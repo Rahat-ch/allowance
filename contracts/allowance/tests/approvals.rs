@@ -356,3 +356,31 @@ fn the_pending_15_holds_the_cap_against_the_injected_split_in_the_demo() {
         assert_eq!(*o, (Outcome::Blocked, Some(BlockedReason::DailyCapExceeded)));
     }
 }
+
+#[test]
+fn list_pending_leaves_out_spends_whose_expiry_is_due_and_lists_oldest_first() {
+    let mut c = allowance();
+    // Submitted out of Request ID order; all Pending ($6 each, above the $5 Auto Limit).
+    submit(&mut c, time(0, 5), "req_pending_00000002", 6 * USD);
+    submit(&mut c, time(1, 0), "req_pending_00000003", 6 * USD);
+    submit(&mut c, time(0, 1), "req_pending_00000001", 6 * USD);
+    at(OWNER, time(2, 0));
+    let ids: Vec<_> = c.list_pending(None, None).into_iter().map(|r| r.request_id).collect();
+    assert_eq!(ids, vec!["req_pending_00000001", "req_pending_00000002", "req_pending_00000003"]);
+    // At 24:30 the first two are due to Expire (nobody has touched them yet).
+    at(OWNER, time(24, 30));
+    let ids: Vec<_> = c.list_pending(None, None).into_iter().map(|r| r.request_id).collect();
+    assert_eq!(ids, vec!["req_pending_00000003"]);
+    assert_eq!(c.list_pending(Some(1), None), vec![]);
+}
+
+#[test]
+#[should_panic(expected = "busy: all signing keys are in use")]
+fn a_busy_key_pool_at_pickup_refuses_the_whole_call() {
+    let mut c = pending();
+    approve(&mut c, time(1, 0));
+    // Lease the only key to an Approved spend that is being paid.
+    submit(&mut c, time(1, 1), "req_small_000000001", USD);
+    // The panic reverts the call on chain, so the approval stays as it was for a retry.
+    submit(&mut c, time(1, 2), ID, 15 * USD);
+}

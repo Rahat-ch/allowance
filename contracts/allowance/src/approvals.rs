@@ -75,15 +75,21 @@ impl Allowance {
         r.status
     }
 
-    /// Pending and approved-but-not-picked-up spends, oldest first, as they are now.
+    /// Pending and approved-but-not-picked-up spends as they are now (ones whose Expiry or
+    /// Lapse is due are left out), oldest request first.
     pub fn list_pending(&self, from_index: Option<u32>, limit: Option<u32>) -> Vec<SpendRequest> {
         let now = env::block_timestamp();
-        self.open_ids
+        let mut open: Vec<SpendRequest> = self
+            .open_ids
             .iter()
+            .filter_map(|id| self.requests.get(id))
+            .filter(|r| matches!(effective_status(r, now), Status::Pending | Status::Approved))
+            .cloned()
+            .collect();
+        open.sort_by(|a, b| (a.requested_at_ns, &a.request_id).cmp(&(b.requested_at_ns, &b.request_id)));
+        open.into_iter()
             .skip(from_index.unwrap_or(0) as usize)
             .take(limit.unwrap_or(50).min(100) as usize)
-            .filter_map(|id| self.requests.get(id))
-            .map(|r| SpendRequest { status: effective_status(r, now), ..r.clone() })
             .collect()
     }
 }

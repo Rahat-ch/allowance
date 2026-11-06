@@ -62,7 +62,7 @@ export type HarnessOptions = {
   payerKeys?: number;
   /** Answer every signature request as soon as it appears. Tests of timeouts turn this off. */
   autoRespond?: boolean;
-  /** USDC the Allowance starts with, in base units. */
+  /** USDC the Owner deposits into the Allowance (ft_transfer_call), in base units. */
   allowanceUsdc?: bigint;
   /** Wasm to deploy; defaults to the last build (see buildContracts). */
   wasms?: Wasms;
@@ -170,6 +170,17 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
       args: { receiver_id: to, amount: amount.toString() },
       deposit: 1n,
       gas: 30n * TGAS,
+    });
+  }
+
+  /** Funds the Allowance the way an Owner does: transfer-and-notify, so the deposit is credited. */
+  async function depositUsdc(from: Account, amount: bigint): Promise<void> {
+    await from.callFunction({
+      contractId: usdc.accountId,
+      methodName: "ft_transfer_call",
+      args: { receiver_id: allowance.accountId, amount: amount.toString(), msg: "" },
+      deposit: 1n,
+      gas: 60n * TGAS,
     });
   }
 
@@ -300,7 +311,7 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
 
   await Promise.all([registerUsdc(allowance.accountId), registerUsdc(payee.accountId)]);
   if (allowPayee) await addPayee(payee.accountId);
-  if (allowanceUsdc > 0n) await transferUsdc(owner, allowance.accountId, allowanceUsdc);
+  if (allowanceUsdc > 0n) await depositUsdc(owner, allowanceUsdc);
 
   const facilitator: Facilitator = createFacilitator({
     relayer: { accountId: relayer.accountId, secretKey: secrets.get(relayer.accountId)! },
@@ -334,6 +345,7 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
     view,
     registerUsdc,
     transferUsdc,
+    depositUsdc,
     usdcBalance,
     finalHeight,
     fastForward,

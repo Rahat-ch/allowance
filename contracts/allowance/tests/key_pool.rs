@@ -55,6 +55,9 @@ fn allowance(key_count: u8) -> Allowance {
     );
     c.set_payer_keys_for_test((1..=key_count).map(|i| [i; 32]).collect());
     c.add_payee(acc(PAYEE));
+    // Plenty of USDC, so funding the Payer Account never runs short.
+    ctx("usdc.testnet", 1_000);
+    let _ = c.ft_on_transfer(acc(OWNER), U128(1_000 * USD), String::new());
     c
 }
 

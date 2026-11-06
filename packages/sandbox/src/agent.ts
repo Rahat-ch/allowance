@@ -101,6 +101,14 @@ export type Budget = {
   next_release_ns: number | null;
   velocity_used: number;
   velocity_limit: number;
+  /** USDC the Allowance holds (credited deposits, less transfers out). */
+  usdc_balance: string;
+  /** Pending + approved-unsigned amounts. */
+  held: string;
+  /** usdc_balance - held: what the Owner may Withdraw. */
+  withdrawable: string;
+  /** The Allowance account's NEAR, in yoctoNEAR. */
+  near_balance: string;
 };
 
 export async function getBudget(h: Harness): Promise<Budget> {

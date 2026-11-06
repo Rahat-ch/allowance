@@ -58,6 +58,9 @@ fn allowance(velocity_limit: u32) -> Allowance {
     // Enough Payer Account keys that no test here is ever busy.
     c.set_payer_keys_for_test((1..=32).map(|i| [i; 32]).collect());
     c.add_payee(acc(PAYEE));
+    // Plenty of USDC, so only the limits under test refuse anything.
+    at("usdc.testnet", time(0, 0));
+    let _ = c.ft_on_transfer(acc(OWNER), U128(1_000 * USD), String::new());
     c
 }
 
@@ -103,7 +106,7 @@ fn many_small_requests_never_reserve_more_than_the_cap() {
         .map(|r| r.amount.0)
         .sum();
     assert_eq!(approved, 18 * USD, "six $3 spends fit in $20, the seventh would not");
-    assert_eq!(c.get_budget().used_in_window, U128(18 * USD));
+    assert_eq!(c.get_budget().cap.used_in_window, U128(18 * USD));
 }
 
 #[test]
@@ -183,7 +186,7 @@ fn failed_funding_releases_the_reservation() {
     let r = spend_at(&mut c, time(0, 0), 5 * USD);
     at(ALLOWANCE, time(0, 1));
     let _ = c.on_payer_funded(r.request_id.clone(), Err(PromiseError::Failed));
-    assert_eq!(c.get_budget().used_in_window, U128(0));
+    assert_eq!(c.get_budget().cap.used_in_window, U128(0));
     assert_eq!(c.get_request(r.request_id).unwrap().reserved_hour, None);
 }
 
@@ -194,7 +197,7 @@ fn failed_funding_releases_only_that_spends_share_of_its_bucket() {
     spend_at(&mut c, time(0, 1), 3 * USD);
     at(ALLOWANCE, time(0, 2));
     let _ = c.on_payer_funded(a.request_id, Err(PromiseError::Failed));
-    assert_eq!(c.get_budget().used_in_window, U128(3 * USD));
+    assert_eq!(c.get_budget().cap.used_in_window, U128(3 * USD));
 }
 
 #[test]
@@ -207,7 +210,7 @@ fn issuing_moves_the_reservation_to_the_issue_hour() {
         let _ = c.on_payer_funded(r.request_id.clone(), Ok(()));
         assert_eq!(c.get_request(r.request_id.clone()).unwrap().reserved_hour, Some(H + 2));
     }
-    assert_eq!(c.get_budget().used_in_window, U128(20 * USD), "moved, not counted twice");
+    assert_eq!(c.get_budget().cap.used_in_window, U128(20 * USD), "moved, not counted twice");
     // So it is still held when the request hour's bucket would have left the window.
     assert_eq!(spend_at(&mut c, time(25, 30), 1).blocked_reason, Some(BlockedReason::DailyCapExceeded));
     assert_eq!(spend_at(&mut c, time(27, 0), 1).outcome, Outcome::Approved);
@@ -219,7 +222,7 @@ fn the_budget_view_shows_usage_reservations_and_when_capacity_frees() {
     spend_at(&mut c, time(0, 0), 15 * USD); // Pending
     spend_at(&mut c, time(1, 0), 2 * USD); // Approved
     at(OWNER, time(1, 30));
-    let b = c.get_budget();
+    let b = c.get_budget().cap;
     assert_eq!((b.used_in_window, b.daily_cap, b.available), (U128(17 * USD), U128(20 * USD), U128(3 * USD)));
     assert_eq!(b.next_release_ns, Some(time(25, 0)));
     assert_eq!((b.velocity_used, b.velocity_limit), (2, 10));
@@ -257,7 +260,7 @@ fn blocked_requests_use_neither_velocity_nor_cap() {
     for i in 0..5 {
         c.request_spend(format!("req_unknown_payee_{i:03}"), acc("attacker.testnet"), U128(USD), None, 60);
     }
-    let b = c.get_budget();
+    let b = c.get_budget().cap;
     assert_eq!((b.used_in_window, b.velocity_used), (U128(0), 0));
 }
 

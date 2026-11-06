@@ -1,0 +1,19 @@
+{
+  "network": "testnet",
+  "owner": "your-owner.testnet",
+  "name": "allowance1",
+  "policy": {
+    "dailyCap": "5",
+    "autoLimit": "0.5",
+    "hardCeiling": "2",
+    "velocityLimit": 30,
+    "maxTimeoutBlocks": 120
+  },
+  "payees": ["your-seller.testnet"],
+  "keyCount": 4,
+  "fund": {
+    "usdc": "2",
+    "near": "5"
+  },
+  "agentGasNear": "1"
+}

@@ -1,6 +1,6 @@
 /**
  * The official x402 `exact` facilitator for NEAR, in process, pointed at the
- * sandbox RPC. Same wiring as the tracer (packages/tracer/src/facilitator.ts).
+ * sandbox RPC.
  */
 import { x402Facilitator } from "@x402/core/facilitator";
 import type { FacilitatorClient } from "@x402/core/server";

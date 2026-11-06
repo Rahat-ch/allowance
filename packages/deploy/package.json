@@ -1,20 +1,20 @@
 {
-  "name": "tracer",
+  "name": "deploy",
   "private": true,
   "type": "module",
-  "description": "Tracer for ticket #2: a Signed Payment from the Allowance contract, verified and settled by the unmodified x402 exact NEAR facilitator on testnet.",
+  "description": "One-command locked Allowance deploy (ticket #11): creates, initializes, funds and locks an Allowance, then verifies the lock (ADR 0004).",
   "engines": {
     "node": ">=24"
   },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "pay": "tsx src/pay.ts",
-    "deploy": "tsx src/deploy.ts",
-    "fund": "tsx src/fund.ts",
+    "allowance": "tsx src/main.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@x402/core": "2.30.0",
     "@x402/near": "2.30.0",
     "dotenv": "18.0.9",
     "near-api-js": "7.4.0"

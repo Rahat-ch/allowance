@@ -90,6 +90,9 @@ pub struct SpendRequest {
     /// released (or if it never had one).
     pub reserved_hour: Option<u64>,
     pub payment: Option<SignedPayment>,
+    /// False for a Blocked request beyond the per-hour storage budget (and for an
+    /// IdempotencyConflict): its event is its only record and `get_request` won't find it.
+    pub stored: bool,
 }
 
 impl SpendRequest {

@@ -41,6 +41,8 @@ export type SpendRequest = {
   blocked_reason: BlockedReason | null;
   limit: { used: string; limit: string; retry_after_ns: number | null } | null;
   reserved_hour: number | null;
+  /** False for a Blocked request beyond the per-hour storage budget: only its event records it. */
+  stored: boolean;
   payment: {
     key_index: number;
     public_key: string;
@@ -56,6 +58,8 @@ export type SpendArgs = {
   amount: bigint;
   memo?: string;
   max_timeout_blocks: number;
+  /** Gas to attach (default SPEND_GAS). A Blocked request needs far less. */
+  gas?: bigint;
 };
 
 export function newRequestId(): string {
@@ -79,7 +83,7 @@ export async function requestSpend(h: Harness, args: SpendArgs): Promise<SpendRe
     memo: args.memo ?? null,
     max_timeout_blocks: args.max_timeout_blocks,
     },
-    SPEND_GAS,
+    args.gas ?? SPEND_GAS,
   );
 }
 

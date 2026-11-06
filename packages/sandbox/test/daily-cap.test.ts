@@ -17,6 +17,8 @@ beforeAll(async () => {
       velocity_limit: 100,
       max_timeout_blocks: 120,
     },
+    // A signing key for each of the six spends that fit the cap, so none is refused as busy.
+    payerKeys: 6,
   });
 });
 

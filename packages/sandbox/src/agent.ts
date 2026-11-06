@@ -107,6 +107,16 @@ export async function getBudget(h: Harness): Promise<Budget> {
   return h.view<Budget>(h.allowance.accountId, "get_budget");
 }
 
+export type KeyPool = { keys: number; free: number; next_free_height: number | null };
+
+/** The Payer Account's signing keys: how many are free for a new Signed Payment. */
+export async function getKeyPool(h: Harness): Promise<KeyPool> {
+  return h.view<KeyPool>(h.allowance.accountId, "get_key_pool");
+}
+
+/** request_spend refuses with this when every signing key is leased; retry the same Request ID. */
+export const BUSY = /busy: all signing keys are in use/;
+
 /** Polls until the request is no longer moving money (Funding) or being signed (Signing). */
 export async function waitForPayment(h: Harness, requestId: string, timeoutMs = 60_000): Promise<SpendRequest> {
   const deadline = Date.now() + timeoutMs;
@@ -149,7 +159,7 @@ export function allowanceFetch(
             payee: requirements.payTo,
             amount: BigInt(requirements.amount),
             memo: "harness x402 call",
-            // ~1 block per second; the contract refuses more than the Policy allows.
+            // ~1 block per second; the contract clamps it to the Policy maximum anyway.
             max_timeout_blocks: Math.min(requirements.maxTimeoutSeconds, h.policy.max_timeout_blocks),
           });
           if (submitted.outcome !== "Approved") throw new NotPaid(submitted);

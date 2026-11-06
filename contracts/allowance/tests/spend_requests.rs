@@ -254,7 +254,7 @@ fn malformed_requests_are_blocked_as_invalid() {
         ("req_zero_amount_00001", 0, None, 60),
         ("req_long_memo_000001", USD, Some("x".repeat(65)), 60),
         ("req_zero_timeout_0001", USD, None, 0),
-        ("req_long_timeout_0001", USD, None, 121),
+        // A timeout above the Policy maximum is clamped, not invalid (tests/key_pool.rs).
     ];
     for (id, amount, memo, timeout) in cases {
         let r = c.request_spend(id.into(), acc(PAYEE), U128(amount), memo, timeout);
@@ -358,19 +358,7 @@ fn a_funded_payment_gets_the_previous_blocks_nonce_and_the_sellers_timeout() {
     let r = c.get_request(ID.into()).unwrap();
     assert_eq!(r.status, Status::Signing);
     let p = r.payment.unwrap();
-    assert_eq!((p.nonce, p.max_block_height), (4_999_000_000, 5_060));
-}
-
-#[test]
-fn two_payments_on_one_key_in_the_same_block_get_increasing_nonces() {
-    let mut c = allowance();
-    spend(&mut c, "req_0000000000000001", PAYEE, USD);
-    spend(&mut c, "req_0000000000000002", PAYEE, USD);
-    ctx(ALLOWANCE, 5_000);
-    let _ = c.on_payer_funded("req_0000000000000001".into(), Ok(()));
-    let _ = c.on_payer_funded("req_0000000000000002".into(), Ok(()));
-    let nonce = |id: &str| c.get_request(id.into()).unwrap().payment.unwrap().nonce;
-    assert_eq!((nonce("req_0000000000000001"), nonce("req_0000000000000002")), (4_999_000_000, 4_999_000_001));
+    assert_eq!((p.nonce, p.max_block_height), (4_997_000_000, 5_058));
 }
 
 #[test]

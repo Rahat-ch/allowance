@@ -11,7 +11,8 @@ let h: Harness;
 let seller: Seller;
 
 beforeAll(async () => {
-  h = await startHarness();
+  // One signing key per Signed Payment this file issues within one payment's validity.
+  h = await startHarness({ payerKeys: 3 });
   seller = await startSeller({ facilitator: h.facilitator, payTo: h.payee.accountId, asset: h.usdc.accountId });
 });
 

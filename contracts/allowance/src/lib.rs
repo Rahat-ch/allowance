@@ -5,6 +5,7 @@
 //! NEP-366 delegate from the Payer Account that this contract builds and has signed
 //! through Chain Signatures itself (ADR 0003).
 
+pub mod approvals;
 pub mod budget;
 pub mod delegate;
 pub mod events;
@@ -66,6 +67,8 @@ pub struct Allowance {
     /// Daily Cap Reservations and Velocity counts by hour.
     budget: Budget,
     requests: LookupMap<String, SpendRequest>,
+    /// Pending and approved-but-not-picked-up Request IDs.
+    open_ids: IterableSet<String>,
     /// Stored Request IDs in submission order, for paging.
     request_ids: Vector<String>,
     /// How many Blocked requests were stored this hour (storage griefing protection).
@@ -153,6 +156,7 @@ impl Allowance {
             payer_creating: false,
             budget: Budget::new(b"b", b"c"),
             requests: LookupMap::new(b"r"),
+            open_ids: IterableSet::new(b"o"),
             request_ids: Vector::new(b"i"),
             blocked_records: BlockedRecords::default(),
             funds: Funds::default(),
@@ -175,8 +179,12 @@ impl Allowance {
         self.budget_view(self.budget.usage(now_hour(), self.policy.daily_cap.0, self.policy.velocity_limit))
     }
 
+    /// The request as it is now (a due Expiry or Lapse shows straight away).
     pub fn get_request(&self, request_id: String) -> Option<SpendRequest> {
-        self.requests.get(&request_id).cloned()
+        let now = env::block_timestamp();
+        self.requests
+            .get(&request_id)
+            .map(|r| SpendRequest { status: approvals::effective_status(r, now), ..r.clone() })
     }
 
     /// The Payer Account: a sub-account only this contract can sign for.
@@ -196,8 +204,19 @@ impl Allowance {
 
     // ---- Owner ----------------------------------------------------------------------
 
+    /// Replaces the Policy. It applies to new Spend Requests; approvals and Pickups
+    /// re-check the current Hard Ceiling.
+    #[payable]
+    pub fn set_policy(&mut self, policy: Policy) {
+        self.assert_owner_confirmed();
+        policy.assert_valid();
+        events::emit("policy_changed", json!({ "old": self.policy, "new": policy }));
+        self.policy = policy;
+    }
+
+    #[payable]
     pub fn add_payee(&mut self, payee: AccountId) {
-        self.assert_owner();
+        self.assert_owner_confirmed();
         if self.allowlist.insert(payee.clone()) {
             events::emit("payee_added", json!({ "payee": payee }));
         }
@@ -268,7 +287,7 @@ impl Allowance {
 
         if let Some(existing) = self.requests.get(&request_id) {
             if existing.same_details(&payee, amount, &memo) {
-                return existing.clone();
+                return self.resubmitted(&request_id, max_timeout_blocks);
             }
             // Its own event, so an indexer never mistakes the stored request for Blocked.
             events::emit(
@@ -307,13 +326,21 @@ impl Allowance {
                 self.funds.hold(request.amount.0);
                 request.reserved_hour = Some(hour);
                 request.outcome = outcome;
-                request.status = if outcome == Outcome::Pending { Status::Pending } else { Status::Funding };
+                if outcome == Outcome::Pending {
+                    request.status = Status::Pending;
+                    request.expires_at_ns = Some(request.requested_at_ns + approvals::PENDING_TTL_NS);
+                } else {
+                    request.status = Status::Funding;
+                }
             }
         }
         request.stored = request.outcome != Outcome::Blocked || self.blocked_records.admit(now_hour());
         emit_outcome(&request);
         if request.stored {
             self.store(&request);
+        }
+        if request.status == Status::Pending {
+            self.open_ids.insert(request.request_id.clone());
         }
         if request.status == Status::Funding {
             self.issue_signed_payment(&request.request_id);
@@ -481,6 +508,14 @@ impl Allowance {
         require!(env::predecessor_account_id() == self.owner_id, "only the Owner");
     }
 
+    /// The Owner, confirming with exactly 1 yoctoNEAR attached. A function-call key (such as
+    /// the one a web page gets when the Owner signs in) can't attach a deposit, so these
+    /// calls always need the Owner's full-access key or a wallet confirmation.
+    pub(crate) fn assert_owner_confirmed(&self) {
+        self.assert_owner();
+        near_sdk::assert_one_yocto();
+    }
+
     /// The Agent's function-call key lives on this account, so the Agent calls as itself.
     fn assert_agent(&self) {
         require!(
@@ -510,6 +545,8 @@ impl Allowance {
             blocked_reason: None,
             limit: None,
             reserved_hour: None,
+            expires_at_ns: None,
+            pickup_deadline_ns: None,
             payment: None,
             stored: false,
         }
@@ -629,7 +666,7 @@ impl Allowance {
     }
 }
 
-fn now_hour() -> u64 {
+pub(crate) fn now_hour() -> u64 {
     hour_of(env::block_timestamp())
 }
 

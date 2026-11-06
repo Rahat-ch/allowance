@@ -2,6 +2,8 @@
 //! own until its max_block_height passes, so concurrent payments never invalidate each
 //! other; when no key is free the Agent gets a retryable "busy" refusal that changes nothing.
 
+mod common;
+
 use allowance::Allowance;
 use allowance::keys::{KeyPool, KeyPoolStatus};
 use allowance::policy::Policy;
@@ -54,6 +56,7 @@ fn allowance(key_count: u8) -> Allowance {
         None,
     );
     c.set_payer_keys_for_test((1..=key_count).map(|i| [i; 32]).collect());
+    common::confirm();
     c.add_payee(acc(PAYEE));
     // Plenty of USDC, so funding the Payer Account never runs short.
     ctx("usdc.testnet", 1_000);

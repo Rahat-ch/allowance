@@ -2,6 +2,8 @@
 //! storage. Blocked requests are stored only up to a per-hour budget; beyond it the event
 //! is the only record.
 
+mod common;
+
 use allowance::Allowance;
 use allowance::budget::HOUR_NS;
 use allowance::policy::Policy;
@@ -53,6 +55,7 @@ fn allowance() -> Allowance {
         None,
     );
     c.set_payer_keys_for_test(vec![[7u8; 32]]);
+    common::confirm();
     c.add_payee(acc(PAYEE));
     c
 }
@@ -145,6 +148,7 @@ fn an_identical_retry_of_an_unstored_blocked_request_is_evaluated_afresh() {
     // The Owner allows the Payee; nothing recorded the earlier Blocked attempt, so the
     // retry is a new Spend Request (and nothing was ever paid for the old one).
     ctx(OWNER, T0 + 50);
+    common::confirm();
     c.add_payee(acc(ATTACKER));
     let retry = spend_at(&mut c, T0 + 100, &id(BUDGET), ATTACKER, USD);
     assert_eq!(retry.outcome, Outcome::Approved);

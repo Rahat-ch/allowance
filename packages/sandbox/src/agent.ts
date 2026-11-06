@@ -14,6 +14,10 @@ export type Outcome = "Approved" | "Pending" | "Blocked";
 export type Status =
   | "Blocked"
   | "Pending"
+  | "Approved"
+  | "Rejected"
+  | "Expired"
+  | "Lapsed"
   | "Funding"
   | "Signing"
   | "Signed"
@@ -43,6 +47,8 @@ export type SpendRequest = {
   reserved_hour: number | null;
   /** False for a Blocked request beyond the per-hour storage budget: only its event records it. */
   stored: boolean;
+  expires_at_ns: number | null;
+  pickup_deadline_ns: number | null;
   payment: {
     key_index: number;
     public_key: string;
@@ -152,6 +158,8 @@ export function allowanceFetch(
   h: Harness,
   onRequest?: (requestId: string) => void,
   baseFetch: typeof fetch = fetch,
+  /** Re-submit this Request ID instead of minting one: how an approved spend is picked up. */
+  resumeRequestId?: string,
 ): typeof fetch {
   const client = new x402Client()
     // The Allowance enforces the Policy; the client's default $1 cap must not second-guess it.
@@ -160,7 +168,7 @@ export function allowanceFetch(
       NETWORK,
       new ExactNearScheme({
         async createSignedDelegateAction({ paymentRequirements: requirements }) {
-          const requestId = newRequestId();
+          const requestId = resumeRequestId ?? newRequestId();
           onRequest?.(requestId);
           const submitted = await requestSpend(h, {
             request_id: requestId,
@@ -170,7 +178,9 @@ export function allowanceFetch(
             // ~1 block per second; the contract clamps it to the Policy maximum anyway.
             max_timeout_blocks: Math.min(requirements.maxTimeoutSeconds, h.policy.max_timeout_blocks),
           });
-          if (submitted.outcome !== "Approved") throw new NotPaid(submitted);
+          // Paying: newly Approved, or an approved spend just picked up.
+          const paying = ["Funding", "Signing", "Signed"].includes(submitted.status);
+          if (!paying || submitted.blocked_reason) throw new NotPaid(submitted);
           const r = await waitForPayment(h, requestId);
           if (r.status !== "Signed" || !r.payment?.signed_delegate_action) throw new NotPaid(r);
           return r.payment.signed_delegate_action;

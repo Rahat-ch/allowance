@@ -1,6 +1,8 @@
 //! Seam 1 for ticket #8: USDC deposits through transfer-and-notify, the budget view of where
 //! the money is, and Withdraw limited to the USDC balance minus Held.
 
+mod common;
+
 use allowance::Allowance;
 use allowance::funds::BudgetView;
 use allowance::policy::Policy;
@@ -55,6 +57,7 @@ fn allowance() -> Allowance {
         None,
     );
     c.set_payer_keys_for_test(vec![[7u8; 32]]);
+    common::confirm();
     c.add_payee(acc(PAYEE));
     c
 }

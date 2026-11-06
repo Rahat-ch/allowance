@@ -141,8 +141,7 @@ impl Allowance {
     /// to the balance.
     #[payable]
     pub fn withdraw(&mut self, amount: U128) -> Promise {
-        self.assert_owner();
-        near_sdk::assert_one_yocto();
+        self.assert_owner_confirmed();
         require!(amount.0 > 0, "amount must be positive");
         let withdrawable = self.funds.withdrawable();
         if !self.funds.take(amount.0) {

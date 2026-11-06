@@ -69,15 +69,49 @@ importers:
       '@x402/near':
         specifier: 2.30.0
         version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
-      deploy:
-        specifier: workspace:*
-        version: link:../deploy
       near-api-js:
         specifier: 7.4.0
         version: 7.4.0
       zod:
         specifier: 4.6.7
         version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 5.1.0
+        version: 5.1.0(@types/node@24.19.2)(vite@8.3.6(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15))
+
+  packages/proof:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: 1.32.2
+        version: 1.32.2(zod@4.6.7)
+      '@x402/core':
+        specifier: 2.30.0
+        version: 2.30.0
+      '@x402/near':
+        specifier: 2.30.0
+        version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
+      allowance-mcp:
+        specifier: workspace:*
+        version: link:../mcp
+      dotenv:
+        specifier: 18.0.9
+        version: 18.0.9
+      near-api-js:
+        specifier: 7.4.0
+        version: 7.4.0
+      seller:
+        specifier: workspace:*
+        version: link:../seller
     devDependencies:
       '@types/node':
         specifier: 24.19.2
@@ -100,15 +134,15 @@ importers:
       '@x402/core':
         specifier: 2.30.0
         version: 2.30.0
-      '@x402/fetch':
-        specifier: 2.30.0
-        version: 2.30.0
       '@x402/near':
         specifier: 2.30.0
         version: 2.30.0(@near-js/keystores@2.5.1(@near-js/crypto@2.5.1(@near-js/types@2.5.1)(@near-js/utils@2.5.1(@near-js/types@2.5.1)))(@near-js/types@2.5.1))(@near-js/types@2.5.1)
       allowance-mcp:
         specifier: workspace:*
         version: link:../mcp
+      deploy:
+        specifier: workspace:*
+        version: link:../deploy
       near-api-js:
         specifier: 7.4.0
         version: 7.4.0

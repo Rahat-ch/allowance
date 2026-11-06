@@ -56,6 +56,9 @@ pub enum Status {
     Expired,
     /// Approved but not picked up in time. Its Reservation is released.
     Lapsed,
+    /// Ended by the Owner before it was signed: Revoke, or its Payee was removed while it
+    /// was approved but not picked up. Its Reservation is released.
+    Cancelled,
     /// Moving the amount from the Allowance into the Payer Account.
     Funding,
     /// Sent to the signer. Counts as spent from here on, whatever happens (ADR 0003).

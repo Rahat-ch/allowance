@@ -318,3 +318,9 @@ fn a_zero_withdraw_is_refused() {
     let mut c = funded_allowance(10 * USD);
     withdraw(&mut c, 0);
 }
+
+#[test]
+fn get_asset_is_the_configured_usdc_contract() {
+    let c = allowance();
+    assert_eq!(c.get_asset(), acc(USDC_ID));
+}

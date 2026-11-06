@@ -12,6 +12,7 @@
 import { Account, JsonRpcProvider, KeyPair, type SerializedReturnValue } from "near-api-js";
 import { DEFAULT_ACCOUNT_ID, DEFAULT_PRIVATE_KEY, Sandbox } from "near-sandbox";
 import { NEAR_TESTNET_CAIP2 } from "@x402/near";
+import { callNow as callFirstReceipt } from "allowance-mcp";
 import { readContracts, type Wasms } from "./contracts.js";
 import { createFacilitator, type Facilitator } from "./facilitator.js";
 
@@ -328,27 +329,8 @@ async function setUp(sandbox: Sandbox, options: HarnessOptions) {
    * executed, without waiting for the callbacks it scheduled (signing can take a while).
    * A panic in the method rejects with its message.
    */
-  async function callNow<T>(account: Account, contractId: string, method: string, args: Record<string, unknown>, gas = 300n * TGAS): Promise<T> {
-    const tx = await account.callFunctionRaw({ contractId, methodName: method, args, gas, waitUntil: "INCLUDED_FINAL" });
-    const txHash = tx.transaction_outcome.id;
-    const receiptId = tx.transaction_outcome.outcome.receipt_ids[0];
-    for (let i = 0; i < 200; i++) {
-      const status = await provider.viewTransactionStatusWithReceipts({ txHash, accountId: account.accountId, waitUntil: "INCLUDED" });
-      const outcome = status.receipts_outcome.find((r) => r.id === receiptId)?.outcome.status as
-        | { SuccessValue?: string; SuccessReceiptId?: string; Failure?: unknown }
-        | string
-        | undefined;
-      if (outcome !== undefined && typeof outcome === "object") {
-        if (outcome.Failure !== undefined) throw new Error(`${method} failed: ${JSON.stringify(outcome.Failure)}`);
-        if (outcome.SuccessValue !== undefined) {
-          const raw = Buffer.from(outcome.SuccessValue, "base64").toString();
-          return (raw === "" ? undefined : JSON.parse(raw)) as T;
-        }
-        if (outcome.SuccessReceiptId !== undefined) return undefined as T;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    throw new Error(`${method}: first receipt of ${txHash} never executed`);
+  function callNow<T>(account: Account, contractId: string, method: string, args: Record<string, unknown>, gas = 300n * TGAS): Promise<T> {
+    return callFirstReceipt<T>(account, contractId, method, args, gas);
   }
 
   // ---- Payer Account ----------------------------------------------------------------

@@ -10,7 +10,7 @@ import { getBudget, getKeyPool, newRequestId, requestSpend, waitForPayment } fro
 import { TGAS, USDC, startHarness, type Harness } from "../src/harness.js";
 
 /** The contract's SETTLEMENT_SLACK_BLOCKS: a just-expired payment is deducted this long. */
-const SETTLEMENT_SLACK_BLOCKS = 10;
+const SETTLEMENT_SLACK_BLOCKS = 40;
 
 let h: Harness;
 

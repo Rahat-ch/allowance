@@ -21,9 +21,19 @@
 //! `ft_balance_of(Payer Account)` and, in the callback, takes off the amounts of every
 //! Signed Payment (and sweep) whose delegate may still move money (see
 //! [`KeyPool::live_holders`](crate::keys::KeyPool::live_holders)). The sweep is the Owner's
-//! amount capped to that, or all of it if the Owner gave none. The outstanding amounts are
-//! computed in the callback, after the balance was read, so a payment issued in between is
-//! still deducted (it can only make the sweep smaller). Nothing to sweep refuses it.
+//! amount capped to that, or all of it if the Owner gave none. Nothing to sweep refuses it.
+//!
+//! The balance read and the deduction happen in different blocks, so everything that can
+//! move USDC between them must be counted:
+//! - A payment funded or issued in between is deducted (computed in the callback), which
+//!   can only make the sweep smaller.
+//! - Another sweep could leave in between, because anyone can relay its delegate at any
+//!   moment. So only one sweep may be outstanding: a new one is refused as busy while the
+//!   last is being checked or signed, or is signed and neither settled nor past its
+//!   `max_block_height` + `SETTLEMENT_SLACK_BLOCKS`. As a second guard a sweep stays
+//!   deducted until it expires, or until it settled before the current sweep was requested.
+//! - Payments and sweeps that expired are deducted for `SETTLEMENT_SLACK_BLOCKS` more,
+//!   since a transfer they started may still land.
 //!
 //! **Budget.** Swept Signed Payments keep counting against the Daily Cap for their window
 //! (ADR 0001): a sweep recovers funds, never cap. Nothing here touches the Budget.
@@ -31,13 +41,17 @@
 //! **Settlement.** The Allowance learns a sweep was relayed when its USDC arrives
 //! (`ft_on_transfer` from the asset, sender the Payer Account, `msg` `sweep:<id>`). Then it
 //! is Settled and its key is given back at once: its nonce is used up on chain.
+//!
+//! **State.** Sweeps add contract state (the `sweeps` vector and the key pool's recent-issue
+//! records), so an Allowance deployed before them needs a fresh deploy; there is no
+//! migration. The account is locked (ADR 0004), so a new deploy is the only way anyway.
 
 use near_sdk::json_types::U128;
 use near_sdk::serde_json::json;
 use near_sdk::{AccountId, Gas, NearToken, PromiseOrValue, env, near, require};
 
 use crate::delegate::FtTransferCallDelegate;
-use crate::keys::FUNDING_LEASE_BLOCKS;
+use crate::keys::{FUNDING_LEASE_BLOCKS, SETTLEMENT_SLACK_BLOCKS};
 use crate::{
     Allowance, AllowanceExt, SIGN_GAS, SIGN_RESPONSE_MAX_BYTES, SignPayload, SignRequest, SignResponse,
     derivation_path, ed25519_string, events, ext_ft, ext_signer,
@@ -101,6 +115,8 @@ pub struct Sweep {
     /// Block timestamp (ns) when the Owner asked for it.
     pub requested_at_ns: u64,
     pub requested_at_height: u64,
+    /// Block height at which its USDC arrived back (Settled).
+    pub settled_at_height: Option<u64>,
 }
 
 impl Sweep {
@@ -109,8 +125,13 @@ impl Sweep {
     fn in_progress(&self, height: u64) -> bool {
         match self.status {
             SweepStatus::Checking => height <= self.requested_at_height + FUNDING_LEASE_BLOCKS,
-            SweepStatus::Signing => self.max_block_height.is_some_and(|h| height <= h),
-            _ => false,
+            // Its delegate exists (or a late signature may still appear) and may still move
+            // money: anyone can relay it at any moment, so no other sweep may read the
+            // balance until it has settled or expired.
+            SweepStatus::Signing | SweepStatus::Signed | SweepStatus::SignatureUnavailable => self
+                .max_block_height
+                .is_some_and(|h| height <= h.saturating_add(SETTLEMENT_SLACK_BLOCKS)),
+            SweepStatus::Settled | SweepStatus::Refused | SweepStatus::Expired => false,
         }
     }
 }
@@ -123,7 +144,8 @@ impl Allowance {
     /// `Signed` (then relay `signed_delegate_action`) or `Refused`.
     ///
     /// Panics "busy: ..." (changing nothing) while every Payer Account key holds an
-    /// unexpired Signed Payment, and while another sweep is still being checked or signed.
+    /// unexpired Signed Payment, and while the previous sweep is outstanding: being checked
+    /// or signed, or signed and neither settled nor expired (see the module docs).
     /// Attach about 150 TGas.
     #[payable]
     pub fn sweep(&mut self, amount: Option<U128>) -> u64 {
@@ -133,7 +155,7 @@ impl Allowance {
         // Only the latest sweep can still be in progress: this refuses a new one meanwhile.
         let last = self.sweeps.len().checked_sub(1).and_then(|i| self.sweeps.get(i));
         if let Some(last) = last.filter(|s| s.in_progress(env::block_height())) {
-            env::panic_str(&format!("busy: sweep {} is still being checked or signed", last.id));
+            env::panic_str(&format!("busy: sweep {} is still outstanding (being checked or signed, or signed and not yet settled or expired)", last.id));
         }
         let id = self.sweeps.len() as u64;
         let key_index = self.lease_signing_key(&holder(id));
@@ -152,6 +174,7 @@ impl Allowance {
             signed_delegate_action: None,
             requested_at_ns: env::block_timestamp(),
             requested_at_height: env::block_height(),
+            settled_at_height: None,
         });
         events::emit("sweep_requested", json!({ "id": id, "requested_amount": amount, "key_index": key_index }));
         ext_ft::ext(self.asset_id.clone())
@@ -183,11 +206,14 @@ impl Allowance {
         };
         let height = env::block_height();
         let own = holder(id);
+        // The balance was read after this sweep was requested, so whatever settled before
+        // then is already out of it.
+        let read_after = self.sweep_record(id).requested_at_height;
         let outstanding: u128 = self
             .keys
             .live_holders(height)
             .filter(|h| *h != own)
-            .map(|h| self.amount_held_by(h))
+            .map(|h| self.amount_held_by(h, read_after))
             .sum();
         let mut s = self.sweep_record(id);
         let sweepable = balance.0.saturating_sub(outstanding);
@@ -273,6 +299,7 @@ impl Allowance {
             return;
         }
         s.status = SweepStatus::Settled;
+        s.settled_at_height = Some(env::block_height());
         self.keys.release(&holder(id));
         events::emit("sweep_settled", json!({ "id": id, "amount": amount }));
         self.save_sweep(s);
@@ -289,13 +316,18 @@ impl Allowance {
 
     /// The amount a key holder's delegate can still move: a Spend Request's (the Allowance
     /// can't tell whether it was collected), or a sweep's until it has settled.
-    fn amount_held_by(&self, holder_id: &str) -> u128 {
+    ///
+    /// A sweep is deducted until it has expired (`live_holders`) or settled. One that
+    /// settled at or after `read_after` (the height the current sweep was requested at) is
+    /// still deducted: its USDC may have left after the balance was read. (While a sweep is
+    /// outstanding no other may start, see `Sweep::in_progress`; this is the second guard.)
+    fn amount_held_by(&self, holder_id: &str, read_after: u64) -> u128 {
         match holder_id.strip_prefix(HOLDER_PREFIX) {
             Some(n) => n
                 .parse::<u32>()
                 .ok()
                 .and_then(|i| self.sweeps.get(i))
-                .filter(|s| s.status != SweepStatus::Settled)
+                .filter(|s| s.settled_at_height.is_none_or(|h| h >= read_after))
                 .map_or(0, |s| s.amount.0),
             None => self.requests.get(holder_id).map_or(0, |r| r.amount.0),
         }

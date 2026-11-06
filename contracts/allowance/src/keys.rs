@@ -66,7 +66,7 @@ pub const FINALITY_SLACK_BLOCKS: u64 = 2;
 /// still be in flight: NEAR checks `max_block_height` when the Delegate action executes,
 /// and the token transfer it emits runs a block or more later (cross-shard). A sweep keeps
 /// deducting such a delegate's amount until then.
-pub const SETTLEMENT_SLACK_BLOCKS: u64 = 10;
+pub const SETTLEMENT_SLACK_BLOCKS: u64 = 40;
 
 impl PayerKey {
     fn is_free(&self, height: u64) -> bool {

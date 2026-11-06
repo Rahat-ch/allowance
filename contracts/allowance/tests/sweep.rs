@@ -87,7 +87,12 @@ fn allowance(keys: u32) -> Allowance {
 }
 
 fn deposit(c: &mut Allowance, sender: &str, amount: u128, msg: &str) {
-    ctx(USDC_ID, 1_000);
+    deposit_at(c, 1_000, sender, amount, msg);
+}
+
+/// USDC arriving through `ft_on_transfer` at `height` (a relayed sweep, or any deposit).
+fn deposit_at(c: &mut Allowance, height: u64, sender: &str, amount: u128, msg: &str) {
+    ctx(USDC_ID, height);
     let _ = c.ft_on_transfer(acc(sender), U128(amount), msg.into());
 }
 
@@ -253,9 +258,70 @@ fn a_sweep_leases_only_a_key_whose_payment_expired_and_signs_above_its_nonce() {
 fn only_one_sweep_is_checked_or_signed_at_a_time() {
     let mut c = allowance(2);
     let id = sweep(&mut c, 1_001, None).unwrap();
-    assert!(sweep(&mut c, 1_001, None).unwrap_err().contains("busy: sweep 0 is still being checked or signed"));
+    assert!(sweep(&mut c, 1_001, None).unwrap_err().contains("busy: sweep 0 is still outstanding"));
     balance_is(&mut c, id, 1_002, 0); // refused: nothing there
     assert_eq!(sweep(&mut c, 1_003, None), Ok(1));
+}
+
+#[test]
+fn a_signed_sweep_blocks_the_next_one_until_it_settles() {
+    // Anyone can relay a signed sweep at any moment, so a second sweep's balance read could
+    // be overtaken by it.
+    let mut c = allowance(2);
+    issue_payment(&mut c, 0, 3 * USD, 1_002);
+    let first = sweep(&mut c, AFTER_EXPIRY, None).unwrap();
+    balance_is(&mut c, first, AFTER_EXPIRY, 3 * USD);
+    signed(&mut c, first, AFTER_EXPIRY); // not relayed yet
+    assert!(sweep(&mut c, AFTER_EXPIRY + 1, None).unwrap_err().contains("busy: sweep 0 is still outstanding"));
+    deposit_at(&mut c, AFTER_EXPIRY + 2, PAYER, 3 * USD, "sweep:0");
+    assert_eq!(sweep(&mut c, AFTER_EXPIRY + 2, None), Ok(1));
+}
+
+/// A sweep that is never relayed blocks the next one until its transfer could no longer land.
+fn blocks_until_expired_plus_slack(signature_unavailable: bool) {
+    let mut c = allowance(2);
+    issue_payment(&mut c, 0, 3 * USD, 1_002);
+    let first = sweep(&mut c, AFTER_EXPIRY, None).unwrap();
+    let s = balance_is(&mut c, first, AFTER_EXPIRY, 3 * USD);
+    if signature_unavailable {
+        callback_ctx(AFTER_EXPIRY, PromiseResult::Failed);
+        c.on_sweep_signed(first);
+    } else {
+        signed(&mut c, first, AFTER_EXPIRY);
+    }
+    let last = s.max_block_height.unwrap() + SETTLEMENT_SLACK_BLOCKS;
+    assert!(sweep(&mut c, last, None).unwrap_err().contains("busy: sweep 0"));
+    assert_eq!(sweep(&mut c, last + 1, None), Ok(1));
+}
+
+#[test]
+fn a_signed_sweep_never_relayed_blocks_the_next_one_until_it_has_expired() {
+    blocks_until_expired_plus_slack(false);
+}
+
+#[test]
+fn a_sweep_without_a_signature_blocks_the_next_one_too() {
+    // A late signature may still be published and relayed.
+    blocks_until_expired_plus_slack(true);
+}
+
+#[test]
+fn a_sweep_that_settles_after_the_next_one_was_requested_is_still_deducted() {
+    // X = $3 (expired, key 0) and P = $4 (still valid, key 1) in the Payer Account. Sweep 0
+    // takes X. If its USDC leaves after sweep 1's balance read, that read still shows X + P:
+    // sweep 1 must not then take X again out of P's funds.
+    let mut c = allowance(2);
+    issue_payment(&mut c, 0, 3 * USD, 1_002); // X, through 1_060
+    issue_payment(&mut c, 1, 4 * USD, 1_080); // P, through 1_138
+    let first = sweep(&mut c, AFTER_EXPIRY, None).unwrap();
+    assert_eq!(balance_is(&mut c, first, AFTER_EXPIRY, 7 * USD).amount, U128(3 * USD));
+    signed(&mut c, first, AFTER_EXPIRY);
+    let settled_at = AFTER_EXPIRY + 2;
+    deposit_at(&mut c, settled_at, PAYER, 3 * USD, "sweep:0");
+
+    let second = sweep(&mut c, settled_at, None).unwrap();
+    let s = balance_is(&mut c, second, settled_at + 1, 7 * USD); // read before sweep 0 left
+    assert_eq!((s.outstanding, s.status), (Some(U128(7 * USD)), SweepStatus::Refused), "P's $4 stays put");
 }
 
 // ---- how much ----------------------------------------------------------------------
@@ -299,15 +365,15 @@ fn a_payment_that_just_expired_is_still_deducted_while_its_transfer_may_be_in_fl
 }
 
 #[test]
-fn an_unsigned_sweep_still_valid_is_deducted_from_the_next_one() {
+fn a_spend_still_being_funded_is_deducted() {
+    // Approved and its transfer into the Payer Account has landed, but `on_payer_funded`
+    // hasn't issued it yet: its key is leased for funding, and the USDC is not sweepable.
     let mut c = allowance(2);
-    issue_payment(&mut c, 0, 3 * USD, 1_002);
-    let first = sweep(&mut c, AFTER_EXPIRY, Some(USD)).unwrap();
-    balance_is(&mut c, first, AFTER_EXPIRY, 3 * USD);
-    signed(&mut c, first, AFTER_EXPIRY); // never relayed (yet)
-    let second = sweep(&mut c, AFTER_EXPIRY + 1, None).unwrap();
-    let s = balance_is(&mut c, second, AFTER_EXPIRY + 1, 3 * USD);
-    assert_eq!((s.outstanding, s.amount), (Some(U128(USD)), U128(2 * USD)));
+    ctx(ALLOWANCE, 1_000);
+    assert_eq!(c.request_spend(rid(0), acc(PAYEE), U128(3 * USD), None, 60).status, Status::Funding);
+    let id = sweep(&mut c, 1_001, None).unwrap();
+    let s = balance_is(&mut c, id, 1_002, 3 * USD);
+    assert_eq!((s.outstanding, s.status), (Some(U128(3 * USD)), SweepStatus::Refused));
 }
 
 #[test]
@@ -429,7 +495,7 @@ fn returned_usdc_is_credited_and_withdrawable_and_the_sweep_settles() {
     assert_eq!(pool(&c, AFTER_EXPIRY + 1).free, 0);
 
     // The relayed ft_transfer_call notifies the Allowance.
-    deposit(&mut c, PAYER, 3 * USD, "sweep:0");
+    deposit_at(&mut c, AFTER_EXPIRY, PAYER, 3 * USD, "sweep:0");
     assert_eq!(events("sweep_settled"), vec![json!({ "id": 0, "amount": "3000000" })]);
     assert_eq!(events("deposit").len(), 1);
     assert_eq!(get(&c, id, AFTER_EXPIRY + 1).status, SweepStatus::Settled);
@@ -455,7 +521,7 @@ fn a_deposit_that_is_not_this_sweeps_return_is_credited_but_settles_nothing() {
         (PAYER, 2 * USD, "sweep:0"), // not the sweep's amount
         (PAYER, 3 * USD, "sweep:9"), // no such sweep
     ] {
-        deposit(&mut c, sender, amount, msg);
+        deposit_at(&mut c, AFTER_EXPIRY, sender, amount, msg);
         assert_eq!(events("deposit").len(), 1);
         assert!(events("sweep_settled").is_empty(), "{sender} {amount} {msg}");
     }
@@ -471,7 +537,7 @@ fn the_daily_cap_is_unaffected_by_a_sweep() {
     let id = sweep(&mut c, AFTER_EXPIRY, None).unwrap();
     balance_is(&mut c, id, AFTER_EXPIRY, 3 * USD);
     signed(&mut c, id, AFTER_EXPIRY);
-    deposit(&mut c, PAYER, 3 * USD, "sweep:0");
+    deposit_at(&mut c, AFTER_EXPIRY, PAYER, 3 * USD, "sweep:0");
     assert_eq!(budget(&c, AFTER_EXPIRY).cap, cap_before, "the swept payment still counts for its window");
 }
 
@@ -482,7 +548,7 @@ fn a_settled_sweep_is_no_longer_deducted_from_the_next_one() {
     let first = sweep(&mut c, AFTER_EXPIRY, Some(USD)).unwrap();
     balance_is(&mut c, first, AFTER_EXPIRY, 3 * USD);
     signed(&mut c, first, AFTER_EXPIRY);
-    deposit(&mut c, PAYER, USD, "sweep:0");
+    deposit_at(&mut c, AFTER_EXPIRY, PAYER, USD, "sweep:0");
     let second = sweep(&mut c, AFTER_EXPIRY + 1, None).unwrap();
     let s = balance_is(&mut c, second, AFTER_EXPIRY + 1, 2 * USD);
     assert_eq!((s.outstanding, s.amount), (Some(U128(0)), U128(2 * USD)));
